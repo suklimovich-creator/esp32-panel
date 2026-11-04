@@ -1,23 +1,31 @@
-// Плитки панели из JSON-раскладки.
+// Плитки панели из JSON-раскладки. Вид - как у плиток wb-svg-panel (тема
+// graphite): каждая плитка - один объект, рисуется целиком (tile_draw_cb).
 //
 // Типы (поля - как в config.yaml wb-svg-panel):
 //   switch  - вкл/выкл:     state, [cmd]
 //   dimmer  - яркость:      level, [state], [temp], [max], [temp_min], [temp_max]
-//   scene   - нажатие:      cmd, [payload]
-//   sensor  - значение:     value, [unit], [digits]
+//   scene   - нажатие:      cmd, [payload], [icon]
+//   sensor  - значение:     value, [unit], [digits], [icon]
 //   info    - сводка (кондиционер, термостат, шторы...): [value], [unit],
 //             [digits], [map], [lines: [{label, topic, unit, digits, map}]],
 //             [active] - канал «работает», [note] - подпись без данных,
 //             [invert] - значение 0-100 показывать наоборот (шторы),
-//             [pad] - пульт по нажатию (pads.c)
+//             [pad] - пульт по нажатию (pads.c); с ним плитка рисует прибор
 // Явные адреса команд (с сервера, например Sprut.hub): state_cmd,
 // level_cmd, temp_cmd; у выключателя - cmd. У выключателя бывает invert.
-// У всех: title, w - ширина в колонках 1-3 (диммер по умолчанию 3, остальные 1).
+// У всех: title, w - ширина в колонках 1-3 (диммер по умолчанию 3),
+// h - высота в рядах: 1 - квадрат, 0.5 - половина (выключатель, сцена,
+// датчик, широкий диммер по умолчанию 0.5, остальные 1).
 // Команда по умолчанию - тот же топик с "/on" на конце (правило Wiren Board).
+//
+// Жесты как у панели: нажатие - включить/выключить (сцена - нажать, сводка -
+// открыть пульт); диммер - провести вверх ярче (широкий - вправо), лента -
+// вбок теплее/холоднее.
 #include <string.h>
 #include <stdlib.h>
 #include <stdio.h>
 #include <stdint.h>
+#include <math.h>
 #include "esp_log.h"
 #include "esp_heap_caps.h"
 #include "cJSON.h"
@@ -26,12 +34,25 @@
 
 static const char *TAG = "tiles";
 
-// Сетка 3 колонки: 12 + 3*146 + 2*8 + 12 = 480.
+// Сетка: 3 колонки по 146 px, ряд - 146 px, полряда - 69 px.
 #define COL_W 146
+#define ROW_H 69
 #define GAP 8
 #define MAX_PAGES 12
-#define PUB_EVERY_MS 150        // не чаще при перетаскивании ползунка
-#define ECHO_IGNORE_MS 1500     // после касания не дёргать ползунок эхом брокера
+#define PUB_EVERY_MS 150        // не чаще при перетаскивании
+#define ECHO_IGNORE_MS 1500     // после касания не дёргать плитку эхом брокера
+#define DRAG_SLOP 8
+
+// Цвета плиток (graphite)
+#define T_BG1    0x26272B       // плитка: сверху
+#define T_BG2    0x1C1D20       //          снизу
+#define T_EDGE   0x303135
+#define T_ON1    0x4D3B22       // включённая: тёплый свет сверху
+#define T_ON2    0x24211D
+#define T_ACT    0xF2A23A       // рамка включённой, ползунки
+#define T_INK    0xF2F2F4
+#define T_DIM    0x8E8E90
+#define T_TRACK  0x3A3B40
 
 typedef enum { T_SWITCH, T_DIMMER, T_SCENE, T_SENSOR, T_INFO, T_UNKNOWN } ttype_t;
 
@@ -47,17 +68,21 @@ typedef struct {
 typedef struct {
     ttype_t type;
     char *title, *state, *state_cmd, *level, *level_cmd, *temp, *temp_cmd;
-    char *value, *cmd, *payload, *unit;
-    int digits, max, temp_min, temp_max, w;
-    bool on, invert;
+    char *value, *cmd, *payload, *unit, *icon;
+    int digits, max, temp_min, temp_max, w, hh;     // hh - высота в полрядах
+    bool on, invert, light, active, has_val;
     cJSON *map;                     // подписи значений (info)
-    char *active, *note;            // info
+    char *active_topic, *note;      // info
     info_line_t lines[MAX_LINES];
     int nlines;
-    lv_obj_t *lbl_lines;
+    char val[40];                   // основное значение для показа
     pad_t *pad;                     // пульт по нажатию (info)
     int lvl, tmp;
-    lv_obj_t *card, *lbl_title, *lbl_state, *lbl_value, *lbl_unit, *sl_level, *sl_temp;
+    lv_obj_t *card;
+    // касание
+    bool pressed, dragging, dragged, flash;
+    lv_point_t p0;
+    int v0, axis;                   // axis: 1 - яркость, 2 - теплота
     uint32_t level_pub, temp_pub, level_touch, temp_touch;
 } tile_t;
 
@@ -100,7 +125,7 @@ static char *cmd_of(const char *topic, char *explicit_cmd)
     return c;
 }
 
-static bool truthy(const char *v)
+static bool t_truthy(const char *v)
 {
     return strcmp(v, "true") == 0 || strcmp(v, "ON") == 0 || atof(v) != 0;
 }
@@ -112,70 +137,9 @@ static void publish_int(const char *topic, int v)
     mq_publish(topic, b);
 }
 
-static lv_obj_t *card(lv_obj_t *parent, int w, int h)
-{
-    lv_obj_t *c = lv_obj_create(parent);
-    lv_obj_set_size(c, w, h);
-    lv_obj_set_style_bg_color(c, lv_color_hex(C_CARD), 0);
-    lv_obj_set_style_bg_opa(c, LV_OPA_COVER, 0);
-    lv_obj_set_style_radius(c, 16, 0);
-    lv_obj_set_style_border_width(c, 1, 0);
-    lv_obj_set_style_border_color(c, lv_color_hex(C_LINE), 0);
-    lv_obj_set_style_pad_all(c, 12, 0);
-    lv_obj_set_style_shadow_width(c, 0, 0);
-    lv_obj_remove_flag(c, LV_OBJ_FLAG_SCROLLABLE);
-    return c;
-}
+static int clampi(int v, int lo, int hi) { return v < lo ? lo : v > hi ? hi : v; }
 
-static lv_obj_t *flat_slider(lv_obj_t *parent, int w, int h, int min, int max)
-{
-    lv_obj_t *s = lv_slider_create(parent);
-    lv_obj_set_size(s, w, h);
-    lv_slider_set_range(s, min, max);
-    lv_obj_set_style_radius(s, h / 2, LV_PART_MAIN);
-    lv_obj_set_style_bg_color(s, lv_color_hex(C_LINE), LV_PART_MAIN);
-    lv_obj_set_style_bg_opa(s, LV_OPA_COVER, LV_PART_MAIN);
-    lv_obj_set_style_radius(s, h / 2, LV_PART_INDICATOR);
-    lv_obj_set_style_bg_opa(s, LV_OPA_TRANSP, LV_PART_KNOB);
-    lv_obj_set_style_shadow_width(s, 0, LV_PART_KNOB);
-    lv_obj_set_style_pad_all(s, 0, LV_PART_KNOB);
-    lv_obj_set_ext_click_area(s, 8);
-    return s;
-}
-
-// ------------------------------------------------------------ redraw
-static void draw_switch(tile_t *t)
-{
-    lv_label_set_text(t->lbl_state, t->on ? "Включено" : "Выключено");
-    lv_obj_set_style_text_color(t->lbl_state, lv_color_hex(t->on ? C_LIGHT : C_DIM), 0);
-    lv_obj_set_style_bg_color(t->card, lv_color_hex(t->on ? C_CARD_ON : C_CARD), 0);
-    lv_obj_set_style_border_color(t->card, lv_color_hex(t->on ? C_LIGHT : C_LINE), 0);
-}
-
-static void draw_dimmer(tile_t *t)
-{
-    bool on = t->state ? t->on : t->lvl > 0;
-    if (on) {
-        lv_label_set_text_fmt(t->lbl_state, "%d%%", t->max ? t->lvl * 100 / t->max : t->lvl);
-    } else {
-        lv_label_set_text(t->lbl_state, "Выключено");
-    }
-    lv_obj_set_style_text_color(t->lbl_state, lv_color_hex(on ? C_LIGHT : C_DIM), 0);
-    lv_obj_set_style_bg_color(t->sl_level, lv_color_hex(on ? C_LIGHT : C_OFF), LV_PART_INDICATOR);
-    lv_obj_set_style_border_color(t->card, lv_color_hex(on ? 0x4A4330 : C_LINE), 0);
-}
-
-static void draw_sensor(tile_t *t, const char *v)
-{
-    char *end;
-    double d = strtod(v, &end);
-    if (end != v) {
-        lv_label_set_text_fmt(t->lbl_value, "%.*f", t->digits, d);
-    } else {
-        lv_label_set_text(t->lbl_value, v);
-    }
-    if (t->lbl_unit) lv_obj_align_to(t->lbl_unit, t->lbl_value, LV_ALIGN_OUT_RIGHT_TOP, 4, 4);
-}
+static bool lit(const tile_t *t) { return t->state ? t->on : t->lvl > 0; }
 
 // Значение для показа: подпись из map, иначе число с нужными знаками, иначе как есть.
 static void fmt_val(char *out, size_t size, const char *raw, int digits, const cJSON *map)
@@ -194,221 +158,445 @@ static void fmt_val(char *out, size_t size, const char *raw, int digits, const c
     }
 }
 
-static void draw_info_lines(tile_t *t)
+static uint32_t mix(uint32_t a, uint32_t b, float f)
 {
-    if (!t->lbl_lines) return;
-    char buf[160] = "";
+    int r = ((a >> 16) & 255) + (int)lroundf((((int)(b >> 16) & 255) - ((int)(a >> 16) & 255)) * f);
+    int g = ((a >> 8) & 255) + (int)lroundf((((int)(b >> 8) & 255) - ((int)(a >> 8) & 255)) * f);
+    int bl = (a & 255) + (int)lroundf((((int)b & 255) - ((int)a & 255)) * f);
+    return (uint32_t)(r << 16 | g << 8 | bl);
+}
+
+// Текст, урезанный по ширине: многоточие в конце.
+static void d_text_fit(const lv_font_t *f, uint32_t c, float x, float base, int maxw, const char *t)
+{
+    char b[96];
+    snprintf(b, sizeof(b), "%s", t ? t : "");
+    if (text_w(f, b) > maxw) {
+        size_t n = strlen(b);
+        while (n > 0) {
+            do n--; while (n > 0 && ((unsigned char)b[n] & 0xC0) == 0x80);   // по символам UTF-8
+            snprintf(b + n, sizeof(b) - n, "…");
+            if (text_w(f, b) <= maxw) break;
+        }
+    }
+    d_text(f, c, LV_OPA_COVER, x, base, 0, b);
+}
+
+// ------------------------------------------------------------ части рисунка
+static void d_card(int x, int y, int w, int h, bool on, bool pressed)
+{
+    if (on) d_vgrad(x, y, w, h, 14, T_ON1, LV_OPA_COVER, T_ON2, LV_OPA_COVER);
+    else d_vgrad(x, y, w, h, 14, T_BG1, LV_OPA_COVER, T_BG2, LV_OPA_COVER);
+    if (pressed) d_rect(x, y, w, h, 14, 0xFFFFFF, 18);
+    d_border(x, y, w, h, 14, on ? 2 : 1, on ? T_ACT : T_EDGE, LV_OPA_COVER);
+}
+
+// Индикатор на корпусе: у выключенного светится (найти в темноте), у
+// включённого - тёмный с риской. Как у панели.
+static void d_pill(float cx, float y, bool on)
+{
+    int w = 22, h = 7, x = (int)lroundf(cx - w / 2.0f);
+    if (!on) {
+        d_rect(x - 5, (int)y - 4, w + 10, h + 8, 8, T_ACT, 26);
+        d_rect(x - 2, (int)y - 2, w + 4, h + 4, 6, T_ACT, 50);
+        d_rect(x, (int)y, w, h, 4, 0xF7B955, LV_OPA_COVER);
+        d_line(x + 5, y + h / 2.0f, x + w - 5, y + h / 2.0f, 2, 0xFFE6B0, LV_OPA_COVER);
+    } else {
+        d_rect(x, (int)y, w, h, 4, 0x141518, LV_OPA_COVER);
+        d_border(x, (int)y, w, h, 4, 1, 0x3A3B40, LV_OPA_COVER);
+        d_line(x + 6, y + h / 2.0f, x + w - 6, y + h / 2.0f, 1.5f, 0x7A7B80, LV_OPA_COVER);
+    }
+}
+
+// Шар ленты: светлый край сверху слева, тёплое свечение вокруг включённого.
+static void d_sphere(float cx, float cy, float r, bool on, float bright)
+{
+    if (on) {
+        for (int i = 3; i >= 1; i--) d_circle(cx, cy, r + i * 5.5f, 0xC89A5A, (lv_opa_t)(10 + 22 * bright / i));
+    }
+    uint32_t edge = on ? 0x5C5245 : 0x3E3B37, hi = on ? mix(0xB9AE9C, 0xF0E7D8, bright) : 0x9F968A;
+    int n = r > 30 ? 20 : 12;
+    for (int i = 0; i <= n; i++) {
+        float k = i / (float)n, rr = r * (1 - k * 0.82f);
+        d_circle(cx - r * 0.28f * k, cy - r * 0.30f * k, rr, mix(edge, hi, k * k * 0.9f + k * 0.1f), LV_OPA_COVER);
+    }
+    d_arc(cx, cy, r - 1, 1, 0, 360, 0x8A8378, 90);
+}
+
+static void d_knob(float x, float y, float r)
+{
+    d_circle(x, y, r + 1.6f, 0x17181B, LV_OPA_COVER);
+    d_circle(x, y, r, 0xFFFFFF, LV_OPA_COVER);
+}
+
+static void d_title(const tile_t *t, int x, int y, int w, int h)
+{
+    d_text_fit(f14, T_INK, x + 12, y + h - 13, w - 24, t->title);
+}
+
+static void pct_text(const tile_t *t, char *b, size_t n)
+{
+    snprintf(b, n, "%d %%", t->max ? t->lvl * 100 / t->max : t->lvl);
+}
+
+// Лента/диммер квадратом: шар с дугой яркости (и точками теплоты) или
+// пластина с ползунком; процент справа сверху.
+static void draw_light_sq(const tile_t *t, int x, int y, int w, int h)
+{
+    bool on = lit(t);
+    float f = t->max ? clampi(t->lvl, 0, t->max) / (float)t->max : 0;
+    char b[16];
+    d_card(x, y, w, h, on, t->pressed && !t->dragging);
+    float k = h / 146.0f;
+    if (t->light) {
+        float cx = x + w * 0.47f, cy = y + 64 * k, r = 36 * k, ra = r + 11 * k;
+        d_sphere(cx, cy, r, on, f);
+        d_arc(cx, cy, ra, 3, 160, 300, T_TRACK, LV_OPA_COVER);
+        float a = 160 + 140 * f;
+        if (f > 0.005f) d_arc(cx, cy, ra, 3, 160, a, on ? T_ACT : 0x9A9BA0, LV_OPA_COVER);
+        float rad = a * (float)M_PI / 180;
+        d_knob(cx + (ra + 1.5f) * cosf(rad), cy + (ra + 1.5f) * sinf(rad), 4.2f);
+        if (t->temp) {
+            float rd = r + 12 * k;
+            for (int i = 0; i <= 20; i++) {
+                float q = i / 20.0f, ad = (148 - 116 * q) * (float)M_PI / 180;
+                uint32_t c = q < 0.5f ? mix(0x5F9BE0, 0xD2D2D2, q * 2) : mix(0xD2D2D2, 0xE89A4A, q * 2 - 1);
+                d_circle(cx + rd * cosf(ad), cy + rd * sinf(ad), 1.7f, c, on ? LV_OPA_COVER : 150);
+            }
+            int span = t->temp_max - t->temp_min;
+            float q = span ? 1 - clampi(t->tmp - t->temp_min, 0, span) / (float)span : 0.5f;
+            float ad = (148 - 116 * q) * (float)M_PI / 180;
+            d_knob(cx + rd * cosf(ad), cy + rd * sinf(ad), 4);
+        }
+    } else {
+        // пластина диммера с рёбрами и ползунок справа
+        int px = x + (int)(w * 0.265f), py = y + (int)(21 * k), pw = (int)(w * 0.36f), ph = (int)(89 * k);
+        d_rect(px, py, pw, ph, 7, 0x2B2C30, LV_OPA_COVER);
+        d_border(px, py, pw, ph, 7, 1, 0x3A3B3F, LV_OPA_COVER);
+        d_vgrad(px + 4, py + 4, pw - 8, ph - 8, 3, 0x18191C, LV_OPA_COVER, 0x232428, LV_OPA_COVER);
+        for (int yy = py + 7; yy < py + ph - 6; yy += 5) d_line(px + 6, yy, px + pw - 6, yy, 1.4f, 0x4A4B50, 170);
+        float bx = x + w * 0.70f, by1 = y + h * 0.27f, by2 = y + h * 0.73f;
+        d_line(bx, by1, bx, by2, 4, T_TRACK, LV_OPA_COVER);
+        if (f > 0.005f) d_line(bx, by2 - (by2 - by1) * f, bx, by2, 4, on ? T_ACT : 0x9A9BA0, LV_OPA_COVER);
+    }
+    d_pill(x + w / 2.0f, y + 4, on);
+    pct_text(t, b, sizeof(b));
+    d_text(f18, T_INK, LV_OPA_COVER, x + w - 12, y + 31 * k, 2, b);
+    d_title(t, x, y, w, h);
+}
+
+// Лента/диммер полосой: прибор слева, название и яркость, ползунок внизу.
+static void draw_light_strip(const tile_t *t, int x, int y, int w, int h)
+{
+    bool on = lit(t);
+    float f = t->max ? clampi(t->lvl, 0, t->max) / (float)t->max : 0;
+    char b[16];
+    d_card(x, y, w, h, on, t->pressed && !t->dragging);
+    float cy = y + h / 2.0f;
+    if (t->light) {
+        d_sphere(x + 33, cy, 21, on, f);
+    } else {
+        d_rect(x + 18, (int)cy - 24, 30, 48, 5, 0x2B2C30, LV_OPA_COVER);
+        d_border(x + 18, (int)cy - 24, 30, 48, 5, 1, 0x3A3B3F, LV_OPA_COVER);
+        for (int yy = (int)cy - 19; yy < cy + 20; yy += 5) d_line(x + 22, yy, x + 44, yy, 1.2f, 0x4A4B50, 170);
+    }
+    int tx = x + 64;
+    d_text_fit(f14, T_INK, tx, cy - 3, w - (tx - x) - 60, t->title);
+    if (on) pct_text(t, b, sizeof(b));
+    else snprintf(b, sizeof(b), "Выкл");
+    d_text(f18, on ? T_INK : T_DIM, LV_OPA_COVER, x + w - 12, cy - 3, 2, b);
+    float bx1 = tx, bx2 = x + w - 14, byy = y + h - 17;
+    d_line(bx1, byy, bx2, byy, 4, T_TRACK, LV_OPA_COVER);
+    if (f > 0.005f) d_line(bx1, byy, bx1 + (bx2 - bx1) * f, byy, 4, on ? T_ACT : 0x9A9BA0, LV_OPA_COVER);
+    if (t->temp) {
+        int span = t->temp_max - t->temp_min;
+        float q = span ? 1 - clampi(t->tmp - t->temp_min, 0, span) / (float)span : 0.5f;
+        d_circle(bx1 + (bx2 - bx1) * q, byy + 7, 2.2f, mix(0x5F9BE0, 0xE89A4A, q), LV_OPA_COVER);
+    }
+}
+
+// Выключатель: клавиша-рокер; низкий - квадратная клавиша слева.
+static void draw_switch(const tile_t *t, int x, int y, int w, int h)
+{
+    bool on = t->on;
+    d_card(x, y, w, h, on, t->pressed);
+    if (h >= 100) {
+        float k = h / 146.0f;
+        int rx = x + (int)(w / 2.0f - 23), ry = y + (int)(15 * k), rw = 46, rh = (int)(92 * k);
+        d_rect(rx, ry, rw, rh, 12, 0x1C1D20, LV_OPA_COVER);
+        if (on) d_vgrad(rx, ry + rh / 2, rw, rh - rh / 2, 12, 0x3A3B40, LV_OPA_COVER, 0x2E2F34, LV_OPA_COVER);
+        else d_line(rx + 12, ry + rh / 2.0f, rx + rw - 12, ry + rh / 2.0f, 1.5f, 0x0E0F11, LV_OPA_COVER);
+        d_border(rx, ry, rw, rh, 12, 1, 0x3A3B40, LV_OPA_COVER);
+        d_pill(rx + rw / 2.0f, ry + 9, on);
+        d_title(t, x, y, w, h);
+    } else {
+        int s = h - 16, rx = x + 8, ry = y + 8;
+        d_vgrad(rx, ry, s, s, 12, 0x2E2F33, LV_OPA_COVER, 0x222326, LV_OPA_COVER);
+        d_border(rx, ry, s, s, 12, 1, 0x3A3B40, LV_OPA_COVER);
+        float cx = rx + s / 2.0f, cy = ry + s / 2.0f;
+        d_line(cx, ry + 6, cx, ry + s - 6, 1, 0x101113, LV_OPA_COVER);
+        d_rect((int)cx - 5, (int)cy - 10, 10, 20, 4, 0x141518, LV_OPA_COVER);
+        d_border((int)cx - 5, (int)cy - 10, 10, 20, 4, 1, 0x3A3B40, LV_OPA_COVER);
+        d_line(cx, cy - 4, cx, cy + 4, 2, on ? 0xFFE6B0 : 0x9A9BA0, LV_OPA_COVER);
+        d_text_fit(f14, T_INK, rx + s + 12, cy + 5, w - s - 32, t->title);
+    }
+}
+
+static void draw_scene(const tile_t *t, int x, int y, int w, int h)
+{
+    d_card(x, y, w, h, t->flash, t->pressed);
+    const char *ic = icon_path(t->icon ? t->icon : "power");
+    if (h >= 100) {
+        d_icon(ic, x + w / 2.0f, y + h * 0.42f, 40, 2.4f, T_INK, LV_OPA_COVER);
+        d_title(t, x, y, w, h);
+    } else {
+        d_icon(ic, x + 29, y + h / 2.0f, 26, 2, T_INK, LV_OPA_COVER);
+        d_text_fit(f14, T_INK, x + 52, y + h / 2.0f + 5, w - 62, t->title);
+    }
+}
+
+static void draw_sensor(const tile_t *t, int x, int y, int w, int h)
+{
+    d_card(x, y, w, h, false, false);
+    char b[48];
+    snprintf(b, sizeof(b), "%s%s%s", t->has_val ? t->val : "—", t->unit && t->has_val ? " " : "",
+             t->unit && t->has_val ? t->unit : "");
+    const char *ic = icon_path(t->icon ? t->icon : "thermo");
+    if (h >= 100) {
+        d_icon(ic, x + 22, y + 24, 22, 1.8f, T_DIM, LV_OPA_COVER);
+        d_text(f18, T_INK, LV_OPA_COVER, x + w - 12, y + 31, 2, b);
+        d_title(t, x, y, w, h);
+    } else {
+        d_icon(ic, x + 22, y + h / 2.0f, 22, 1.8f, T_DIM, LV_OPA_COVER);
+        d_text(F22S, T_INK, LV_OPA_COVER, x + 42, y + 33, 0, t->has_val ? t->val : "—");
+        if (t->unit && t->has_val)
+            d_text(F12, T_DIM, LV_OPA_COVER, x + 44 + text_w(F22S, t->val), y + 24, 0, t->unit);
+        d_text_fit(F12, T_DIM, x + 42, y + h - 12, w - 52, t->title);
+    }
+}
+
+// Сводка без прибора на плитке: название, значение, строки подробностей.
+static void info_lines(const tile_t *t, char *buf, size_t size, const char *sep)
+{
     size_t n = 0;
+    buf[0] = 0;
     bool on = true;
     if (t->pad && pad_power(t->pad, &on) && !on) {
         // Выключенный прибор помнит режим, но показывать его - путать.
-        snprintf(buf, sizeof(buf), "Выключен");
-        n = 1;
+        snprintf(buf, size, "Выключен");
+        return;
     }
-    // Узкая плитка - по строке на подробность, широкая - всё в строку.
-    const char *sep = t->w == 1 ? "\n" : "  ·  ";
-    for (int i = 0; on && i < t->nlines; i++) {
+    for (int i = 0; i < t->nlines; i++) {
         if (!t->lines[i].text[0]) continue;
-        n += snprintf(buf + n, sizeof(buf) - n, "%s%s", n ? sep : "", t->lines[i].text);
-        if (n >= sizeof(buf)) break;
+        n += snprintf(buf + n, size - n, "%s%s", n ? sep : "", t->lines[i].text);
+        if (n >= size) break;
     }
-    if (!n && t->note) snprintf(buf, sizeof(buf), "%s", t->note);
-    lv_label_set_text(t->lbl_lines, buf);
-    if (t->lbl_value) lv_obj_set_style_text_color(t->lbl_value, lv_color_hex(on ? C_TEXT : C_DIM), 0);
+    if (!n && t->note) snprintf(buf, size, "%s", t->note);
 }
 
-// ------------------------------------------------------------ events
-static void toggle_cb(lv_event_t *e)
+static void draw_info(const tile_t *t, int x, int y, int w, int h)
+{
+    bool on = true;
+    if (t->pad) pad_power(t->pad, &on);
+    if (t->pad && h >= 100) d_card(x, y, w, h, false, false);
+    if (t->pad && pad_tile(t->pad, x, y, w, h, C_BG)) {
+        if (t->pressed) d_rect(x, y, w, h, 14, 0xFFFFFF, 18);
+        return;
+    }
+    d_card(x, y, w, h, false, t->pressed);
+    if (t->active && on) d_border(x, y, w, h, 14, 1, 0x6A5530, LV_OPA_COVER);
+    d_text_fit(F12, T_DIM, x + 12, y + 19, w - 24, t->title);
+    char b[160];
+    int vy = y + (h >= 100 ? 54 : 44);
+    if (t->value) {
+        const char *v = t->has_val ? t->val : "—";
+        d_text(h >= 100 ? F32 : F22S, on ? T_INK : T_DIM, LV_OPA_COVER, x + 12, vy, 0, v);
+        if (t->unit && t->unit[0])
+            d_text(F13, T_DIM, LV_OPA_COVER, x + 15 + text_w(h >= 100 ? F32 : F22S, v), vy - (h >= 100 ? 14 : 9), 0, t->unit);
+    }
+    if (t->nlines || t->note) {
+        if (h >= 100 && w < 200) {
+            // узкая: по строке на подробность (сколько влезет)
+            info_lines(t, b, sizeof(b), "\n");
+            float base = vy + 22;
+            char *ln = b;
+            while (ln && *ln && base < y + h - 4) {
+                char *nl = strchr(ln, '\n');
+                if (nl) *nl = 0;
+                d_text_fit(F12, T_DIM, x + 12, base, w - 24, ln);
+                base += 17;
+                ln = nl ? nl + 1 : NULL;
+            }
+        } else {
+            info_lines(t, b, sizeof(b), "  ·  ");
+            d_text_fit(F12, T_DIM, x + 12, y + h - 12, w - 24, b);
+        }
+    }
+}
+
+static void draw_unknown(const tile_t *t, int x, int y, int w, int h)
+{
+    d_card(x, y, w, h, false, false);
+    d_text_fit(f14, T_DIM, x + 12, y + 26, w - 24, t->title);
+    d_text(F12, T_DIM, LV_OPA_COVER, x + 12, y + 46, 0, "тип не поддерживается");
+}
+
+static void tile_draw_cb(lv_event_t *e)
 {
     tile_t *t = lv_event_get_user_data(e);
-    t->on = !(t->state ? t->on : t->lvl > 0);
+    lv_area_t a;
+    lv_obj_get_coords(t->card, &a);
+    gfx_begin(lv_event_get_layer(e));
+    int x = a.x1, y = a.y1, w = lv_area_get_width(&a), h = lv_area_get_height(&a);
+    switch (t->type) {
+    case T_SWITCH: draw_switch(t, x, y, w, h); break;
+    case T_DIMMER:
+        if (h >= 100) draw_light_sq(t, x, y, w, h);
+        else draw_light_strip(t, x, y, w, h);
+        break;
+    case T_SCENE: draw_scene(t, x, y, w, h); break;
+    case T_SENSOR: draw_sensor(t, x, y, w, h); break;
+    case T_INFO: draw_info(t, x, y, w, h); break;
+    default: draw_unknown(t, x, y, w, h); break;
+    }
+}
+
+static void tile_redraw(tile_t *t) { if (t->card) lv_obj_invalidate(t->card); }
+
+// ------------------------------------------------------------ касания
+static void toggle(tile_t *t)
+{
+    t->on = !lit(t);
     if (t->state) {
         mq_publish(t->state_cmd, (t->on != t->invert) ? "1" : "0");
     } else if (t->level) {
         // Диммер без отдельного включения: выкл = 0, вкл = 100%
         t->lvl = t->on ? t->max : 0;
         publish_int(t->level_cmd, t->lvl);
-        lv_slider_set_value(t->sl_level, t->lvl, LV_ANIM_ON);
-    }
-    if (t->type == T_SWITCH) draw_switch(t); else draw_dimmer(t);
-}
-
-static void level_cb(lv_event_t *e)
-{
-    tile_t *t = lv_event_get_user_data(e);
-    lv_obj_t *s = lv_event_get_target(e);
-    uint32_t now = lv_tick_get();
-    bool final = lv_event_get_code(e) == LV_EVENT_RELEASED;
-    t->lvl = lv_slider_get_value(s);
-    t->level_touch = now;
-    if (t->state && !t->on && t->lvl > 0) {       // потянули выключенный свет - включаем
-        t->on = true;
-        mq_publish(t->state_cmd, "1");
-    }
-    if (final || now - t->level_pub >= PUB_EVERY_MS) {
-        publish_int(t->level_cmd, t->lvl);
-        t->level_pub = now;
-    }
-    draw_dimmer(t);
-}
-
-static void temp_cb(lv_event_t *e)
-{
-    tile_t *t = lv_event_get_user_data(e);
-    uint32_t now = lv_tick_get();
-    bool final = lv_event_get_code(e) == LV_EVENT_RELEASED;
-    t->tmp = lv_slider_get_value(lv_event_get_target(e));
-    t->temp_touch = now;
-    if (final || now - t->temp_pub >= PUB_EVERY_MS) {
-        publish_int(t->temp_cmd, t->tmp);
-        t->temp_pub = now;
     }
 }
 
 static void scene_restore(lv_timer_t *tm)
 {
     tile_t *t = lv_timer_get_user_data(tm);
-    lv_obj_set_style_bg_color(t->card, lv_color_hex(C_CARD), 0);
-    lv_obj_set_style_border_color(t->card, lv_color_hex(C_LINE), 0);
+    t->flash = false;
+    tile_redraw(t);
 }
 
-static void scene_cb(lv_event_t *e)
+static void click(tile_t *t)
 {
-    tile_t *t = lv_event_get_user_data(e);
-    mq_publish(t->cmd, t->payload ? t->payload : "1");
-    lv_obj_set_style_bg_color(t->card, lv_color_hex(C_CARD_ON), 0);
-    lv_obj_set_style_border_color(t->card, lv_color_hex(C_ACC), 0);
-    lv_timer_t *tm = lv_timer_create(scene_restore, 600, t);
-    lv_timer_set_repeat_count(tm, 1);
+    switch (t->type) {
+    case T_SWITCH:
+    case T_DIMMER:
+        toggle(t);
+        break;
+    case T_SCENE: {
+        mq_publish(t->cmd, t->payload ? t->payload : "1");
+        t->flash = true;
+        lv_timer_t *tm = lv_timer_create(scene_restore, 600, t);
+        lv_timer_set_repeat_count(tm, 1);
+        break;
+    }
+    case T_INFO:
+        if (t->pad) pad_open(t->pad);
+        break;
+    default:
+        break;
+    }
 }
 
-static void pad_cb(lv_event_t *e)
+// Перетаскивание по диммеру: вверх (широкий - вправо) ярче, у ленты вбок -
+// теплота. Значение - от того, что было в начале касания.
+static void drag(tile_t *t, lv_point_t p, bool final)
+{
+    int dx = p.x - t->p0.x, dy = p.y - t->p0.y;
+    int w = lv_obj_get_width(t->card), h = lv_obj_get_height(t->card);
+    bool strip = h < 100;
+    if (!t->dragging) {
+        if (abs(dx) < DRAG_SLOP && abs(dy) < DRAG_SLOP) return;
+        t->dragging = t->dragged = true;
+        bool side = abs(dx) > abs(dy);
+        t->axis = strip ? 1 : (side && t->temp) ? 2 : 1;
+        t->v0 = t->axis == 2 ? t->tmp : t->lvl;
+    }
+    uint32_t now = lv_tick_get();
+    if (t->axis == 1) {
+        float d = strip ? dx / (float)(w * 0.8f) : -dy / (float)(h * 0.8f);
+        t->lvl = clampi(t->v0 + (int)lroundf(d * t->max), 0, t->max);
+        t->level_touch = now;
+        if (t->state && !t->on && t->lvl > 0) {      // потянули выключенный свет - включаем
+            t->on = true;
+            mq_publish(t->state_cmd, "1");
+        }
+        if (final || now - t->level_pub >= PUB_EVERY_MS) {
+            publish_int(t->level_cmd, t->lvl);
+            t->level_pub = now;
+        }
+    } else {
+        // точки теплоты: слева холодный (больше), справа тёплый
+        int span = t->temp_max - t->temp_min;
+        t->tmp = clampi(t->v0 - (int)lroundf(dx / (float)(w * 0.8f) * span), t->temp_min, t->temp_max);
+        t->temp_touch = now;
+        if (final || now - t->temp_pub >= PUB_EVERY_MS) {
+            publish_int(t->temp_cmd, t->tmp);
+            t->temp_pub = now;
+        }
+    }
+    tile_redraw(t);
+}
+
+static void tile_touch_cb(lv_event_t *e)
 {
     tile_t *t = lv_event_get_user_data(e);
-    if (t->pad) pad_open(t->pad);
+    lv_event_code_t code = lv_event_get_code(e);
+    lv_point_t p;
+    lv_indev_t *in = lv_indev_active();
+    if (in) lv_indev_get_point(in, &p);
+    switch (code) {
+    case LV_EVENT_PRESSED:
+        t->pressed = true;
+        t->dragging = t->dragged = false;
+        t->p0 = p;
+        tile_redraw(t);
+        break;
+    case LV_EVENT_PRESSING:
+        if (t->type == T_DIMMER && in) drag(t, p, false);
+        break;
+    case LV_EVENT_RELEASED:
+        if (t->dragging && in) drag(t, p, true);
+        t->pressed = t->dragging = false;
+        tile_redraw(t);
+        break;
+    case LV_EVENT_PRESS_LOST:
+        t->pressed = t->dragging = false;
+        tile_redraw(t);
+        break;
+    case LV_EVENT_CLICKED:
+        if (!t->dragged) click(t);
+        t->dragged = false;
+        tile_redraw(t);
+        break;
+    default:
+        break;
+    }
 }
 
 // ------------------------------------------------------------ build
-static int tile_w(const tile_t *t)
-{
-    return t->w * COL_W + (t->w - 1) * GAP;
-}
+static int tile_w(const tile_t *t) { return t->w * COL_W + (t->w - 1) * GAP; }
+static int tile_h(const tile_t *t) { return t->hh * ROW_H + (t->hh - 1) * GAP; }
 
 static void build_tile(lv_obj_t *page, tile_t *t)
 {
-    int w = tile_w(t);
-    switch (t->type) {
-    case T_SWITCH:
-        t->card = card(page, w, 84);
-        lv_obj_add_flag(t->card, LV_OBJ_FLAG_CLICKABLE);
-        t->lbl_title = ui_label(t->card, f18, C_TEXT, t->title);
-        t->lbl_state = ui_label(t->card, f14, C_DIM, "—");
-        lv_obj_align(t->lbl_state, LV_ALIGN_BOTTOM_LEFT, 0, 0);
-        lv_obj_add_event_cb(t->card, toggle_cb, LV_EVENT_CLICKED, t);
-        draw_switch(t);
-        break;
-
-    case T_DIMMER: {
-        t->card = card(page, w, t->temp ? 130 : 98);
-        // Шапка: нажатие включает и выключает, ползунок задаёт яркость.
-        lv_obj_t *head = lv_obj_create(t->card);
-        lv_obj_set_size(head, LV_PCT(100), 26);
-        lv_obj_set_style_bg_opa(head, LV_OPA_TRANSP, 0);
-        lv_obj_set_style_border_width(head, 0, 0);
-        lv_obj_set_style_pad_all(head, 0, 0);
-        lv_obj_remove_flag(head, LV_OBJ_FLAG_SCROLLABLE);
-        lv_obj_add_flag(head, LV_OBJ_FLAG_CLICKABLE);
-        lv_obj_set_ext_click_area(head, 8);
-        t->lbl_title = ui_label(head, f18, C_TEXT, t->title);
-        lv_obj_align(t->lbl_title, LV_ALIGN_LEFT_MID, 0, 0);
-        t->lbl_state = ui_label(head, f18, C_DIM, "—");
-        lv_obj_align(t->lbl_state, LV_ALIGN_RIGHT_MID, 0, 0);
-        lv_obj_add_event_cb(head, toggle_cb, LV_EVENT_CLICKED, t);
-
-        t->sl_level = flat_slider(t->card, w - 26, 38, 0, t->max);
-        lv_obj_align(t->sl_level, LV_ALIGN_TOP_MID, 0, 34);
-        lv_obj_add_event_cb(t->sl_level, level_cb, LV_EVENT_VALUE_CHANGED, t);
-        lv_obj_add_event_cb(t->sl_level, level_cb, LV_EVENT_RELEASED, t);
-
-        if (t->temp) {
-            // Цветовая температура: вся дорожка - градиент, видна только ручка.
-            t->sl_temp = flat_slider(t->card, w - 26, 20, t->temp_min, t->temp_max);
-            lv_obj_align(t->sl_temp, LV_ALIGN_TOP_MID, 0, 84);
-            lv_obj_set_style_bg_color(t->sl_temp, lv_color_hex(0xFFB15C), LV_PART_MAIN);
-            lv_obj_set_style_bg_grad_color(t->sl_temp, lv_color_hex(0xCFE6FF), LV_PART_MAIN);
-            lv_obj_set_style_bg_grad_dir(t->sl_temp, LV_GRAD_DIR_HOR, LV_PART_MAIN);
-            lv_obj_set_style_bg_opa(t->sl_temp, LV_OPA_TRANSP, LV_PART_INDICATOR);
-            lv_obj_set_style_bg_color(t->sl_temp, lv_color_hex(0xFFFFFF), LV_PART_KNOB);
-            lv_obj_set_style_bg_opa(t->sl_temp, LV_OPA_COVER, LV_PART_KNOB);
-            lv_obj_set_style_border_color(t->sl_temp, lv_color_hex(C_BG), LV_PART_KNOB);
-            lv_obj_set_style_border_width(t->sl_temp, 2, LV_PART_KNOB);
-            lv_obj_set_style_pad_all(t->sl_temp, 3, LV_PART_KNOB);
-            lv_obj_add_event_cb(t->sl_temp, temp_cb, LV_EVENT_VALUE_CHANGED, t);
-            lv_obj_add_event_cb(t->sl_temp, temp_cb, LV_EVENT_RELEASED, t);
-        }
-        draw_dimmer(t);
-        break;
-    }
-
-    case T_SCENE:
-        t->card = card(page, w, 62);
-        lv_obj_add_flag(t->card, LV_OBJ_FLAG_CLICKABLE);
-        t->lbl_title = ui_label(t->card, f18, C_TEXT, t->title);
-        lv_obj_align(t->lbl_title, LV_ALIGN_LEFT_MID, 0, 0);
-        lv_obj_add_event_cb(t->card, scene_cb, LV_EVENT_CLICKED, t);
-        break;
-
-    case T_SENSOR:
-        t->card = card(page, w, 84);
-        t->lbl_title = ui_label(t->card, f14, C_DIM, t->title);
-        t->lbl_value = ui_label(t->card, f28b, C_TEXT, "—");
-        lv_obj_align(t->lbl_value, LV_ALIGN_BOTTOM_LEFT, 0, 4);
-        if (t->unit) {
-            t->lbl_unit = ui_label(t->card, f14, C_DIM, t->unit);
-            lv_obj_align_to(t->lbl_unit, t->lbl_value, LV_ALIGN_OUT_RIGHT_TOP, 3, 3);
-        }
-        break;
-
-    case T_INFO: {
-        // Узкой плитке - две строки подробностей, широкой хватает одной.
-        bool two = t->w == 1 && t->nlines > 1;
-        t->card = card(page, w, two ? 116 : t->nlines ? 104 : 84);
-        if (t->pad) {
-            lv_obj_add_flag(t->card, LV_OBJ_FLAG_CLICKABLE);
-            lv_obj_set_style_bg_color(t->card, lv_color_hex(C_CARD_ON), LV_STATE_PRESSED);
-            lv_obj_add_event_cb(t->card, pad_cb, LV_EVENT_CLICKED, t);
-        }
-        t->lbl_title = ui_label(t->card, f14, C_DIM, t->title);
-        if (t->value) {
-            t->lbl_value = ui_label(t->card, f28b, C_TEXT, "—");
-            lv_obj_align(t->lbl_value, LV_ALIGN_TOP_LEFT, 0, 18);
-            if (t->unit) {
-                t->lbl_unit = ui_label(t->card, f14, C_DIM, t->unit);
-                lv_obj_align_to(t->lbl_unit, t->lbl_value, LV_ALIGN_OUT_RIGHT_TOP, 3, 3);
-            }
-        }
-        if (t->nlines || t->note) {
-            t->lbl_lines = ui_label(t->card, f14, C_DIM, "");
-            lv_obj_set_width(t->lbl_lines, w - 24);
-            if (two) lv_obj_set_height(t->lbl_lines, 2 * lv_font_get_line_height(f14) + 2);
-            lv_label_set_long_mode(t->lbl_lines, LV_LABEL_LONG_DOT);
-            lv_obj_align(t->lbl_lines, LV_ALIGN_BOTTOM_LEFT, 0, 2);
-            draw_info_lines(t);
-        }
-        break;
-    }
-
-    default: {
-        t->card = card(page, w, 62);
-        lv_obj_t *l = ui_label(t->card, f14, C_DIM, "");
-        lv_label_set_text_fmt(l, "%s\nтип не поддерживается", t->title ? t->title : "");
-        break;
-    }
-    }
-    if (t->lbl_title) {
-        lv_obj_set_width(t->lbl_title, t->type == T_DIMMER ? w - 110 : w - 24);
-        lv_label_set_long_mode(t->lbl_title, LV_LABEL_LONG_DOT);
-    }
+    lv_obj_t *c = lv_obj_create(page);
+    lv_obj_remove_style_all(c);
+    lv_obj_set_size(c, tile_w(t), tile_h(t));
+    lv_obj_remove_flag(c, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(c, LV_OBJ_FLAG_CLICKABLE);
+    // Диммер ведут пальцем - страницу под ним не листать (как ползунок).
+    if (t->type == T_DIMMER) lv_obj_remove_flag(c, LV_OBJ_FLAG_SCROLL_CHAIN);
+    lv_obj_add_event_cb(c, tile_draw_cb, LV_EVENT_DRAW_MAIN, t);
+    lv_obj_add_event_cb(c, tile_touch_cb, LV_EVENT_ALL, t);
+    t->card = c;
 }
 
 static void parse_tile(tile_t *t, const cJSON *o)
@@ -425,18 +613,20 @@ static void parse_tile(tile_t *t, const cJSON *o)
     t->temp = jstr(o, "temp");
     t->value = jstr(o, "value");
     t->unit = jstr(o, "unit");
+    t->icon = jstr(o, "icon");
     t->payload = jstr(o, "payload");
     t->cmd = jstr(o, "cmd");
     t->digits = jint(o, "digits", 1);
     t->max = jint(o, "max", 100);
+    if (t->max <= 0) t->max = 100;
     t->temp_min = jint(o, "temp_min", 0);
     t->temp_max = jint(o, "temp_max", 100);
+    t->tmp = (t->temp_min + t->temp_max) / 2;
     // Ширина в колонках (1-3). Диммер по умолчанию на всю ширину.
-    t->w = jint(o, "w", t->type == T_DIMMER ? 3 : 1);
-    if (t->w < 1) t->w = 1;
-    if (t->w > 3) t->w = 3;
+    t->w = clampi(jint(o, "w", t->type == T_DIMMER ? 3 : 1), 1, 3);
     const cJSON *inv = cJSON_GetObjectItem(o, "invert");
     t->invert = cJSON_IsTrue(inv);
+    t->light = t->temp != NULL || cJSON_IsTrue(cJSON_GetObjectItem(o, "light"));
     if (t->type == T_SWITCH) {
         t->state_cmd = cmd_of(t->state, t->cmd);
     } else {
@@ -447,7 +637,7 @@ static void parse_tile(tile_t *t, const cJSON *o)
     if (t->type == T_INFO) {
         const cJSON *m = cJSON_GetObjectItem(o, "map");
         if (cJSON_IsObject(m)) t->map = cJSON_Duplicate(m, true);
-        t->active = jstr(o, "active");
+        t->active_topic = jstr(o, "active");
         t->note = jstr(o, "note");
         t->pad = pad_parse(o, t->title);
         const cJSON *ln;
@@ -466,6 +656,13 @@ static void parse_tile(tile_t *t, const cJSON *o)
     }
     if (t->type == T_DIMMER && !t->level) t->type = T_UNKNOWN;
     if (t->type == T_SCENE && !t->cmd) t->type = T_UNKNOWN;
+    // Высота: h в рядах (0.5 - полряда). По умолчанию квадрат у ленты и
+    // диммера в одну колонку и у сводки с данными, остальные - в полряда.
+    int def = 1;
+    if (t->type == T_DIMMER && t->w == 1) def = 2;
+    if (t->type == T_INFO && (t->value || t->pad || t->nlines)) def = 2;
+    const cJSON *hj = cJSON_GetObjectItem(o, "h");
+    t->hh = cJSON_IsNumber(hj) ? clampi((int)lroundf(hj->valuedouble * 2), 1, 4) : def;
 }
 
 // Вкладки: страница видна одна, переключение - нажатием на вкладку.
@@ -567,10 +764,23 @@ void tiles_for_each_topic(void (*cb)(const char *topic, void *ctx), void *ctx)
         if (t->level) cb(t->level, ctx);
         if (t->temp) cb(t->temp, ctx);
         if (t->value) cb(t->value, ctx);
-        if (t->active) cb(t->active, ctx);
+        if (t->active_topic) cb(t->active_topic, ctx);
         for (int k = 0; k < t->nlines; k++) cb(t->lines[k].topic, ctx);
         if (t->pad) pad_topics(t->pad, cb, ctx);
     }
+}
+
+typedef struct { const char *topic; bool hit; } use_t;
+static void use_cb(const char *topic, void *ctx)
+{
+    use_t *u = ctx;
+    if (topic && !strcmp(topic, u->topic)) u->hit = true;
+}
+static bool pad_uses(const pad_t *p, const char *topic)
+{
+    use_t u = {topic, false};
+    pad_topics(p, use_cb, &u);
+    return u.hit;
 }
 
 void tiles_on_value(const char *topic, const char *value)
@@ -579,47 +789,46 @@ void tiles_on_value(const char *topic, const char *value)
     uint32_t now = lv_tick_get();
     for (int i = 0; i < s_count; i++) {
         tile_t *t = &s_tiles[i];
+        bool changed = false;
         switch (t->type) {
         case T_SWITCH:
             if (t->state && !strcmp(topic, t->state)) {
-                t->on = truthy(value) != t->invert;
-                draw_switch(t);
+                t->on = t_truthy(value) != t->invert;
+                changed = true;
             }
             break;
         case T_DIMMER:
             if (t->state && !strcmp(topic, t->state)) {
-                t->on = truthy(value);
-                draw_dimmer(t);
+                t->on = t_truthy(value);
+                changed = true;
             }
-            if (!strcmp(topic, t->level)) {
+            // пока ведут пальцем (и чуть после) эхо брокера не дёргает плитку
+            if (!strcmp(topic, t->level) && !t->dragging && now - t->level_touch >= ECHO_IGNORE_MS) {
                 t->lvl = atoi(value);
-                bool touching = lv_obj_has_state(t->sl_level, LV_STATE_PRESSED) ||
-                                now - t->level_touch < ECHO_IGNORE_MS;
-                if (!touching) lv_slider_set_value(t->sl_level, t->lvl, LV_ANIM_ON);
-                draw_dimmer(t);
+                changed = true;
             }
-            if (t->temp && !strcmp(topic, t->temp)) {
+            if (t->temp && !strcmp(topic, t->temp) && !t->dragging && now - t->temp_touch >= ECHO_IGNORE_MS) {
                 t->tmp = atoi(value);
-                bool touching = lv_obj_has_state(t->sl_temp, LV_STATE_PRESSED) ||
-                                now - t->temp_touch < ECHO_IGNORE_MS;
-                if (!touching) lv_slider_set_value(t->sl_temp, t->tmp, LV_ANIM_ON);
+                changed = true;
             }
             break;
         case T_SENSOR:
-            if (t->value && !strcmp(topic, t->value)) draw_sensor(t, value);
+            if (t->value && !strcmp(topic, t->value)) {
+                fmt_val(t->val, sizeof(t->val), value, t->digits, NULL);
+                t->has_val = changed = true;
+            }
             break;
         case T_INFO: {
-            bool lines_changed = t->pad && pad_on_value(t->pad, topic, value);
-            if (t->value && t->lbl_value && !strcmp(topic, t->value)) {
-                char b[40], inv[16];
+            if (t->pad && pad_on_value(t->pad, topic, value)) changed = true;
+            if (t->value && !strcmp(topic, t->value)) {
+                char inv[16];
                 const char *v = value;
                 if (t->invert && !t->map) {
                     snprintf(inv, sizeof(inv), "%g", 100 - atof(value));
                     v = inv;
                 }
-                fmt_val(b, sizeof(b), v, t->digits, t->map);
-                lv_label_set_text(t->lbl_value, b);
-                if (t->lbl_unit) lv_obj_align_to(t->lbl_unit, t->lbl_value, LV_ALIGN_OUT_RIGHT_TOP, 3, 3);
+                fmt_val(t->val, sizeof(t->val), v, t->digits, t->map);
+                t->has_val = changed = true;
             }
             for (int k = 0; k < t->nlines; k++) {
                 info_line_t *l = &t->lines[k];
@@ -628,19 +837,20 @@ void tiles_on_value(const char *topic, const char *value)
                 fmt_val(b, sizeof(b), value, l->digits, l->map);
                 snprintf(l->text, sizeof(l->text), "%s%s%s%s", l->label ? l->label : "",
                          l->label ? " " : "", b, l->unit ? l->unit : "");
-                lines_changed = true;
+                changed = true;
             }
-            if (lines_changed) draw_info_lines(t);
-            if (t->active && !strcmp(topic, t->active)) {
-                bool on = truthy(value);
-                lv_obj_set_style_bg_color(t->card, lv_color_hex(on ? C_CARD_ON : C_CARD), 0);
-                lv_obj_set_style_border_color(t->card, lv_color_hex(on ? 0x4A4330 : C_LINE), 0);
+            if (t->active_topic && !strcmp(topic, t->active_topic)) {
+                t->active = t_truthy(value);
+                changed = true;
             }
+            // значения пульта (уставка, положение) рисуются на плитке
+            if (t->pad && !changed) changed = pad_uses(t->pad, topic);
             break;
         }
         default:
             break;
         }
+        if (changed) tile_redraw(t);
     }
     ui_unlock();
 }

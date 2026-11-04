@@ -26,4 +26,23 @@ void pad_topics(const pad_t *p, void (*cb)(const char *topic, void *ctx), void *
 bool pad_on_value(pad_t *p, const char *topic, const char *value);   // true - сменилось питание
 bool pad_power(const pad_t *p, bool *on);                             // false - питание неизвестно
 void pad_open(pad_t *p);
+bool pad_tile(const pad_t *p, int x, int y, int w, int h, uint32_t page_bg);   // вид плитки, false - не умеет
+bool pad_active(const pad_t *p);                                      // включён / штора открыта
+
+// Рисование на слое (pads.c): сначала gfx_begin со слоем события отрисовки.
+void gfx_begin(lv_layer_t *layer);
+extern lv_font_t *F76, *F60, *F46, *F32, *F22S, *F17, *F13, *F12;
+void d_line(float x1, float y1, float x2, float y2, float w, uint32_t c, lv_opa_t opa);
+void d_rect(int x, int y, int w, int h, int r, uint32_t c, lv_opa_t opa);
+void d_vgrad(int x, int y, int w, int h, int r, uint32_t c1, lv_opa_t o1, uint32_t c2, lv_opa_t o2);
+void d_border(int x, int y, int w, int h, int r, int bw, uint32_t c, lv_opa_t opa);
+void d_circle(float cx, float cy, float r, uint32_t c, lv_opa_t opa);
+void d_arc(float cx, float cy, float r, float w, float a1, float a2, uint32_t c, lv_opa_t opa);
+int text_w(const lv_font_t *f, const char *t);
+void d_text(const lv_font_t *f, uint32_t c, lv_opa_t opa, float x, float base, int align, const char *t);
+void d_num_deg(const lv_font_t *big, const lv_font_t *small, uint32_t c, float x, float base,
+               float deg_dy, const char *num, const char *deg);
+void d_path(const char *d, float ox, float oy, float k, float w, uint32_t c, lv_opa_t opa);
+void d_icon(const char *path, float x, float y, float size, float w, uint32_t c, lv_opa_t opa);
+const char *icon_path(const char *name);
 void pad_close(void);

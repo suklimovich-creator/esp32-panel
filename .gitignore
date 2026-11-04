@@ -8,3 +8,4 @@ sdkconfig
 sdkconfig.old
 tools/sim/obj/
 tools/sim/sim
+components/lvgl/

@@ -2,9 +2,19 @@
 #include "nvs_flash.h"
 #include "esp_app_desc.h"
 #include "esp_log.h"
+#include "esp_heap_caps.h"
+#include "cJSON.h"
 #include "app.h"
 
 static const char *TAG = "main";
+
+// cJSON разбирает раскладку на сотни мелких кусков - пусть они живут в PSRAM,
+// а не во внутренней памяти, нужной Wi-Fi.
+static void *ps_malloc(size_t n)
+{
+    void *p = heap_caps_malloc(n, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    return p ? p : malloc(n);
+}
 
 void app_main(void)
 {
@@ -17,6 +27,8 @@ void app_main(void)
     }
     settings_load();
     lv_mem_psram_link();
+    cJSON_Hooks hooks = {.malloc_fn = ps_malloc, .free_fn = free};
+    cJSON_InitHooks(&hooks);
 
     lcd_init();
     touch_init();
@@ -29,5 +41,6 @@ void app_main(void)
     net_start();
     web_start();
     mq_start();
+    layout_sync_start();
     ota_start();
 }

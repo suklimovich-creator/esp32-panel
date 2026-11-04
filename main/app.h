@@ -15,6 +15,7 @@ typedef struct {
     char pass[65];
     char fw_url[128];   // папка с прошивками на сервере, с "/" в конце
     char mqtt[128];     // брокер, например mqtt://192.168.1.77:1883 (с версии 0.2)
+    char panel_url[128]; // wb-svg-panel, откуда брать раскладку, с "/" в конце; пусто - не брать
     char name[32];      // имя устройства в сети
     uint8_t bright;     // яркость подсветки, %
 } settings_t;
@@ -24,6 +25,7 @@ extern settings_t g_cfg;
 void settings_load(void);
 esp_err_t settings_save(void);
 void settings_forget_wifi(void);
+void settings_fix_url(char *url, size_t size);
 
 void lv_mem_psram_link(void);       // память LVGL в PSRAM (lv_mem_psram.c)
 
@@ -74,11 +76,18 @@ esp_err_t ota_upload_write(const void *data, size_t len);
 esp_err_t ota_upload_end(bool ok);
 
 // ---------------------------------------------------------------- layout
-// Раскладка панели - JSON. Загруженная через веб-страницу хранится в разделе
-// storage; если её нет, берётся встроенная (main/layout_default.json).
-char *layout_get(bool *custom);                 // malloc, free() после
-esp_err_t layout_save(const char *json, size_t len);
-esp_err_t layout_reset(void);
+// Раскладка панели - JSON. Источники по старшинству: загруженная вручную,
+// с сервера wb-svg-panel (копия во flash), встроенная.
+typedef enum { LAYOUT_BUILTIN, LAYOUT_SERVER, LAYOUT_MANUAL } layout_src_t;
+char *layout_get(layout_src_t *src);            // free() после
+void layout_mark_shown(layout_src_t src);
+layout_src_t layout_shown(void);
+const char *layout_src_name(layout_src_t src);
+bool layout_valid(const char *json);
+esp_err_t layout_save(const char *json, size_t len);   // ручная
+esp_err_t layout_reset(void);                          // удалить ручную
+void layout_sync_start(void);                   // забирать с сервера
+const char *layout_sync_text(void);
 
 // ---------------------------------------------------------------- mqtt
 void mq_start(void);

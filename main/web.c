@@ -77,6 +77,9 @@ static esp_err_t h_status(httpd_req_t *req)
     cJSON_AddStringToObject(j, "ota", ota_state_text());
     cJSON_AddBoolToObject(j, "mqtt_ok", mq_connected());
     cJSON_AddNumberToObject(j, "tiles", tiles_count());
+    cJSON_AddStringToObject(j, "layout", layout_src_name(layout_shown()));
+    cJSON_AddStringToObject(j, "layout_sync", layout_sync_text());
+    cJSON_AddStringToObject(j, "panel_url", g_cfg.panel_url);
     cJSON_AddNumberToObject(j, "wifi_drops", ns.disconnects);
     if (ns.disconnects) {
         cJSON_AddStringToObject(j, "wifi_last_reason", net_reason_text(ns.last_reason));
@@ -131,8 +134,9 @@ static esp_err_t h_settings(httpd_req_t *req)
     copy_field(j, "fw_url", g_cfg.fw_url, sizeof(g_cfg.fw_url));
     copy_field(j, "mqtt", g_cfg.mqtt, sizeof(g_cfg.mqtt));
     copy_field(j, "name", g_cfg.name, sizeof(g_cfg.name));
-    size_t n = strlen(g_cfg.fw_url);
-    if (n && g_cfg.fw_url[n - 1] != '/' && n + 1 < sizeof(g_cfg.fw_url)) strcat(g_cfg.fw_url, "/");
+    copy_field(j, "panel_url", g_cfg.panel_url, sizeof(g_cfg.panel_url));
+    settings_fix_url(g_cfg.fw_url, sizeof(g_cfg.fw_url));
+    settings_fix_url(g_cfg.panel_url, sizeof(g_cfg.panel_url));
     cJSON_Delete(j);
 
     esp_err_t err = settings_save();
@@ -179,11 +183,11 @@ static esp_err_t h_update(httpd_req_t *req)
 
 static esp_err_t h_layout_get(httpd_req_t *req)
 {
-    bool custom = false;
-    char *s = layout_get(&custom);
+    layout_src_t src;
+    char *s = layout_get(&src);
     httpd_resp_set_type(req, "application/json; charset=utf-8");
     httpd_resp_set_hdr(req, "Cache-Control", "no-store");
-    httpd_resp_set_hdr(req, "X-Layout-Source", custom ? "custom" : "builtin");
+    httpd_resp_set_hdr(req, "X-Layout-Source", src == LAYOUT_MANUAL ? "custom" : src == LAYOUT_SERVER ? "server" : "builtin");
     esp_err_t err = httpd_resp_sendstr(req, s);
     free(s);
     return err;
@@ -203,15 +207,16 @@ static esp_err_t h_layout_put(httpd_req_t *req)
     }
     buf[got] = 0;
     // Проверяем до записи: битый JSON не должен оставить экран без панели.
-    cJSON *j = cJSON_Parse(buf);
-    const cJSON *pages = cJSON_GetObjectItem(j, "pages");
-    bool ok = cJSON_IsArray(pages) && cJSON_GetArraySize(pages) > 0;
+    bool ok = layout_valid(buf);
     char err_at[80] = "";
-    if (!j) {
-        const char *e = cJSON_GetErrorPtr();
-        snprintf(err_at, sizeof(err_at), "ошибка JSON около: %.40s", e ? e : "?");
+    if (!ok) {
+        cJSON *j = cJSON_Parse(buf);
+        if (!j) {
+            const char *e = cJSON_GetErrorPtr();
+            snprintf(err_at, sizeof(err_at), "ошибка JSON около: %.40s", e ? e : "?");
+        }
+        cJSON_Delete(j);
     }
-    cJSON_Delete(j);
     if (!ok) {
         free(buf);
         return send_ok(req, false, err_at[0] ? err_at : "нет списка pages");
@@ -228,7 +233,7 @@ static esp_err_t h_layout_reset(httpd_req_t *req)
     esp_err_t err = layout_reset();
     if (err != ESP_OK) return send_ok(req, false, esp_err_to_name(err));
     reboot_later(1200);
-    return send_ok(req, true, "возвращена встроенная раскладка, перезагрузка");
+    return send_ok(req, true, "ручная раскладка удалена - будет с сервера или встроенная, перезагрузка");
 }
 
 static esp_err_t h_ota_check(httpd_req_t *req)

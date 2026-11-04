@@ -31,7 +31,7 @@ static lv_obj_t *lbl_clock, *lbl_wifi;
 static lv_obj_t *lbl_dev_info, *lbl_bright;
 static lv_obj_t *lbl_setup_ap, *lbl_setup_pass, *qr, *btn_setup_back;
 static lv_obj_t *ota_box, *ota_bar, *ota_lbl, *ota_pct;
-static bool s_dimmed, s_layout_custom;
+static bool s_dimmed;
 
 // ------------------------------------------------------------ helpers
 static lv_font_t *ttf(const uint8_t *s, const uint8_t *e, int px)
@@ -133,7 +133,9 @@ static void build_main(void)
     lv_obj_set_style_pad_all(content, 0, 0);
     lv_obj_remove_flag(content, LV_OBJ_FLAG_SCROLLABLE);
 
-    char *json = layout_get(&s_layout_custom);
+    layout_src_t src;
+    char *json = layout_get(&src);
+    layout_mark_shown(src);
     tiles_build(content, tabbar, json);
     free(json);
 }
@@ -282,11 +284,11 @@ static void fill_device(const net_status_t *ns)
     }
     lv_label_set_text_fmt(lbl_dev_info,
         "%s  ·  версия %s\nWi-Fi:  %s\nОбрывы:  %s\nMQTT:  %s  ·  точка доступа: %s\n"
-        "Раскладка:  %s, плиток %d\nПамять:  %u КБ, минимум %u КБ\nОбновление:  %s",
+        "Раскладка:  %s, плиток %d; сервер: %s\nПамять:  %u КБ, минимум %u КБ\nОбновление:  %s",
         g_cfg.name, ver, wifi, drops,
         mq_connected() ? "подключён" : "нет связи",
         ns->ap_active ? ns->ap_ssid : "выкл.",
-        s_layout_custom ? "загруженная" : "встроенная", tiles_count(),
+        layout_src_name(layout_shown()), tiles_count(), layout_sync_text(),
         (unsigned)(heap_caps_get_free_size(MALLOC_CAP_INTERNAL) / 1024),
         (unsigned)(heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL) / 1024),
         ota_state_text());

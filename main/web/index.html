@@ -51,6 +51,8 @@ textarea{width:100%;min-height:260px;padding:10px 12px;border-radius:10px;border
 <input id="fw" placeholder="http://192.168.1.77/panel/fw/">
 <label for="mqtt">Брокер MQTT</label>
 <input id="mqtt" placeholder="mqtt://192.168.1.77:1883">
+<label for="purl">Сервер панели (wb-svg-panel), откуда брать раскладку</label>
+<input id="purl" placeholder="http://192.168.1.77/panel/ - пусто, чтобы не брать">
 <div class="btns"><button class="main" id="save">Сохранить и перезагрузить</button></div>
 <div class="msg" id="smsg"></div>
 </section>
@@ -63,7 +65,7 @@ textarea{width:100%;min-height:260px;padding:10px 12px;border-radius:10px;border
 <button class="main" id="lsave">Сохранить</button>
 <button id="lfile">Из файла…</button>
 <button id="ldown">Скачать</button>
-<button id="lreset">Вернуть встроенную</button>
+<button id="lreset">Удалить загруженную</button>
 </div>
 <input id="lpick" type="file" accept=".json,application/json" hidden>
 <div class="msg" id="lmsg"></div>
@@ -98,7 +100,10 @@ async function loadLayout(){
     const r = await fetch('/api/layout');
     const txt = await r.text();
     try{ $('layout').value = JSON.stringify(JSON.parse(txt), null, 2); }catch(e){ $('layout').value = txt; }
-    $('lsrc').textContent = r.headers.get('X-Layout-Source') === 'custom' ? 'Загруженная раскладка' : 'Встроенная раскладка (по умолчанию)';
+    const src = r.headers.get('X-Layout-Source');
+    $('lsrc').textContent = src === 'custom' ? 'Загруженная вручную - сервер не используется, пока её не удалить'
+      : src === 'server' ? 'С сервера панели (правьте config.yaml; здесь - только посмотреть или заменить своей)'
+      : 'Встроенная (с сервера ещё не приходила)';
   }catch(e){ $('lsrc').textContent = 'не удалось получить раскладку'; }
 }
 $('lsave').onclick = async () => {
@@ -114,7 +119,7 @@ $('ldown').onclick = () => { const a = document.createElement('a');
   a.href = URL.createObjectURL(new Blob([$('layout').value], {type:'application/json'}));
   a.download = ($('title').textContent || 'panel') + '-layout.json'; a.click(); };
 $('lreset').onclick = async () => {
-  if(!confirm('Вернуть встроенную раскладку?')) return;
+  if(!confirm('Удалить загруженную раскладку? Экран вернётся к раскладке с сервера или встроенной.')) return;
   const r = await (await fetch('/api/layout/reset', {method:'POST'})).json();
   say($('lmsg'), r.message, r.ok ? 'ok' : 'bad');
 };
@@ -129,6 +134,7 @@ async function load(){
       ['Wi-Fi', s.connected ? esc(s.ssid) + ', ' + s.rssi + ' дБм, в сети ' + ago(s.wifi_online_s) : (s.ssid ? 'нет связи с ' + esc(s.ssid) : 'не настроен')],
       ['Обрывы Wi-Fi', s.wifi_drops ? s.wifi_drops + ', последний ' + ago(s.wifi_last_drop_ago_s) + ' назад: ' + esc(s.wifi_last_reason) : 'не было'],
       ['MQTT', s.mqtt_ok ? 'подключён, плиток ' + s.tiles : 'нет связи с брокером'],
+      ['Раскладка', esc(s.layout) + '; сервер: ' + esc(s.layout_sync)],
       ['Адрес', s.ip || '—'],
       ['Работает', h + ' ч ' + m + ' мин'],
       ['Память', s.heap_kb + ' КБ (минимум ' + s.heap_min_kb + '), PSRAM ' + s.psram_kb + ' КБ'],
@@ -139,7 +145,7 @@ async function load(){
     $('ota').textContent = s.ota;
     if(!filled){
       $('ssid').value = s.ssid; $('name').value = s.name;
-      $('fw').value = s.fw_url; $('mqtt').value = s.mqtt;
+      $('fw').value = s.fw_url; $('mqtt').value = s.mqtt; $('purl').value = s.panel_url;
       filled = true;
     }
   }catch(e){ $('sub').textContent = 'экран не отвечает'; }
@@ -159,7 +165,7 @@ $('ssidsel').onchange = e => { if(e.target.value) $('ssid').value = e.target.val
 
 $('save').onclick = async () => {
   const body = {ssid: $('ssid').value.trim(), pass: $('pass').value, name: $('name').value.trim(),
-                fw_url: $('fw').value.trim(), mqtt: $('mqtt').value.trim()};
+                fw_url: $('fw').value.trim(), mqtt: $('mqtt').value.trim(), panel_url: $('purl').value.trim()};
   try{
     const r = await (await fetch('/api/settings', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)})).json();
     say($('smsg'), r.message + (r.ok && body.ssid ? '. Экран подключится к «' + body.ssid + '»; новая страница будет по его адресу в этой сети.' : ''), r.ok ? 'ok' : 'bad');

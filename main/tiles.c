@@ -5,6 +5,11 @@
 //   dimmer  - яркость:      level, [state], [temp], [max], [temp_min], [temp_max]
 //   scene   - нажатие:      cmd, [payload]
 //   sensor  - значение:     value, [unit], [digits]
+//   info    - сводка (кондиционер, термостат, шторы...): [value], [unit],
+//             [digits], [map], [lines: [{label, topic, unit, digits, map}]],
+//             [active] - канал «работает», [note] - подпись без данных
+// Явные адреса команд (с сервера, например Sprut.hub): state_cmd,
+// level_cmd, temp_cmd; у выключателя - cmd. У выключателя бывает invert.
 // У всех: title, w - ширина в колонках 1-3 (диммер по умолчанию 3, остальные 1).
 // Команда по умолчанию - тот же топик с "/on" на конце (правило Wiren Board).
 #include <string.h>
@@ -12,6 +17,7 @@
 #include <stdio.h>
 #include <stdint.h>
 #include "esp_log.h"
+#include "esp_heap_caps.h"
 #include "cJSON.h"
 #include "app.h"
 #include "ui_priv.h"
@@ -25,14 +31,28 @@ static const char *TAG = "tiles";
 #define PUB_EVERY_MS 150        // не чаще при перетаскивании ползунка
 #define ECHO_IGNORE_MS 1500     // после касания не дёргать ползунок эхом брокера
 
-typedef enum { T_SWITCH, T_DIMMER, T_SCENE, T_SENSOR, T_UNKNOWN } ttype_t;
+typedef enum { T_SWITCH, T_DIMMER, T_SCENE, T_SENSOR, T_INFO, T_UNKNOWN } ttype_t;
+
+#define MAX_LINES 3
+
+typedef struct {
+    char *label, *topic, *unit;
+    int digits;
+    cJSON *map;
+    char text[40];
+} info_line_t;
 
 typedef struct {
     ttype_t type;
     char *title, *state, *state_cmd, *level, *level_cmd, *temp, *temp_cmd;
     char *value, *cmd, *payload, *unit;
     int digits, max, temp_min, temp_max, w;
-    bool on;
+    bool on, invert;
+    cJSON *map;                     // подписи значений (info)
+    char *active, *note;            // info
+    info_line_t lines[MAX_LINES];
+    int nlines;
+    lv_obj_t *lbl_lines;
     int lvl, tmp;
     lv_obj_t *card, *lbl_title, *lbl_state, *lbl_value, *lbl_unit, *sl_level, *sl_temp;
     uint32_t level_pub, temp_pub, level_touch, temp_touch;
@@ -46,10 +66,20 @@ static int s_npages;
 int tiles_count(void) { return s_count; }
 
 // ------------------------------------------------------------ helpers
+// Строки плиток - в PSRAM: их сотни, а внутренняя память нужна Wi-Fi.
+static char *ps_strdup(const char *s)
+{
+    size_t n = strlen(s) + 1;
+    char *d = heap_caps_malloc(n, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!d) d = malloc(n);
+    if (d) memcpy(d, s, n);
+    return d;
+}
+
 static char *jstr(const cJSON *o, const char *key)
 {
     const cJSON *v = cJSON_GetObjectItem(o, key);
-    return cJSON_IsString(v) && v->valuestring[0] ? strdup(v->valuestring) : NULL;
+    return cJSON_IsString(v) && v->valuestring[0] ? ps_strdup(v->valuestring) : NULL;
 }
 
 static int jint(const cJSON *o, const char *key, int def)
@@ -62,8 +92,8 @@ static char *cmd_of(const char *topic, char *explicit_cmd)
 {
     if (explicit_cmd) return explicit_cmd;
     if (!topic) return NULL;
-    char *c = malloc(strlen(topic) + 4);
-    sprintf(c, "%s/on", topic);
+    char *c = heap_caps_malloc(strlen(topic) + 4, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (c) sprintf(c, "%s/on", topic);
     return c;
 }
 
@@ -144,13 +174,44 @@ static void draw_sensor(tile_t *t, const char *v)
     if (t->lbl_unit) lv_obj_align_to(t->lbl_unit, t->lbl_value, LV_ALIGN_OUT_RIGHT_TOP, 4, 4);
 }
 
+// Значение для показа: подпись из map, иначе число с нужными знаками, иначе как есть.
+static void fmt_val(char *out, size_t size, const char *raw, int digits, const cJSON *map)
+{
+    const cJSON *m = map ? cJSON_GetObjectItem(map, raw) : NULL;
+    if (cJSON_IsString(m)) {
+        snprintf(out, size, "%s", m->valuestring);
+        return;
+    }
+    char *end;
+    double d = strtod(raw, &end);
+    if (end != raw && *end == 0) {
+        snprintf(out, size, "%.*f", digits, d);
+    } else {
+        snprintf(out, size, "%s", raw);
+    }
+}
+
+static void draw_info_lines(tile_t *t)
+{
+    if (!t->lbl_lines) return;
+    char buf[160] = "";
+    size_t n = 0;
+    for (int i = 0; i < t->nlines; i++) {
+        if (!t->lines[i].text[0]) continue;
+        n += snprintf(buf + n, sizeof(buf) - n, "%s%s", n ? "  ·  " : "", t->lines[i].text);
+        if (n >= sizeof(buf)) break;
+    }
+    if (!n && t->note) snprintf(buf, sizeof(buf), "%s", t->note);
+    lv_label_set_text(t->lbl_lines, buf);
+}
+
 // ------------------------------------------------------------ events
 static void toggle_cb(lv_event_t *e)
 {
     tile_t *t = lv_event_get_user_data(e);
     t->on = !(t->state ? t->on : t->lvl > 0);
     if (t->state) {
-        mq_publish(t->state_cmd, t->on ? "1" : "0");
+        mq_publish(t->state_cmd, (t->on != t->invert) ? "1" : "0");
     } else if (t->level) {
         // Диммер без отдельного включения: выкл = 0, вкл = 100%
         t->lvl = t->on ? t->max : 0;
@@ -290,6 +351,26 @@ static void build_tile(lv_obj_t *page, tile_t *t)
         }
         break;
 
+    case T_INFO:
+        t->card = card(page, w, t->nlines ? 104 : 84);
+        t->lbl_title = ui_label(t->card, f14, C_DIM, t->title);
+        if (t->value) {
+            t->lbl_value = ui_label(t->card, f28b, C_TEXT, "—");
+            lv_obj_align(t->lbl_value, LV_ALIGN_TOP_LEFT, 0, 18);
+            if (t->unit) {
+                t->lbl_unit = ui_label(t->card, f14, C_DIM, t->unit);
+                lv_obj_align_to(t->lbl_unit, t->lbl_value, LV_ALIGN_OUT_RIGHT_TOP, 3, 3);
+            }
+        }
+        if (t->nlines || t->note) {
+            t->lbl_lines = ui_label(t->card, f14, C_DIM, "");
+            lv_obj_set_width(t->lbl_lines, w - 24);
+            lv_label_set_long_mode(t->lbl_lines, LV_LABEL_LONG_DOT);
+            lv_obj_align(t->lbl_lines, LV_ALIGN_BOTTOM_LEFT, 0, 2);
+            draw_info_lines(t);
+        }
+        break;
+
     default: {
         t->card = card(page, w, 62);
         lv_obj_t *l = ui_label(t->card, f14, C_DIM, "");
@@ -308,9 +389,10 @@ static void parse_tile(tile_t *t, const cJSON *o)
     const cJSON *ty = cJSON_GetObjectItem(o, "type");
     const char *type = cJSON_IsString(ty) ? ty->valuestring : "";
     t->type = !strcmp(type, "switch") ? T_SWITCH : !strcmp(type, "dimmer") ? T_DIMMER
-            : !strcmp(type, "scene") ? T_SCENE : !strcmp(type, "sensor") ? T_SENSOR : T_UNKNOWN;
+            : !strcmp(type, "scene") ? T_SCENE : !strcmp(type, "sensor") ? T_SENSOR
+            : !strcmp(type, "info") ? T_INFO : T_UNKNOWN;
     t->title = jstr(o, "title");
-    if (!t->title) t->title = strdup(type);
+    if (!t->title) t->title = ps_strdup(type);
     t->state = jstr(o, "state");
     t->level = jstr(o, "level");
     t->temp = jstr(o, "temp");
@@ -326,13 +408,34 @@ static void parse_tile(tile_t *t, const cJSON *o)
     t->w = jint(o, "w", t->type == T_DIMMER ? 3 : 1);
     if (t->w < 1) t->w = 1;
     if (t->w > 3) t->w = 3;
+    const cJSON *inv = cJSON_GetObjectItem(o, "invert");
+    t->invert = cJSON_IsTrue(inv);
     if (t->type == T_SWITCH) {
         t->state_cmd = cmd_of(t->state, t->cmd);
     } else {
-        t->state_cmd = cmd_of(t->state, NULL);
+        t->state_cmd = cmd_of(t->state, jstr(o, "state_cmd"));
     }
-    t->level_cmd = cmd_of(t->level, NULL);
-    t->temp_cmd = cmd_of(t->temp, NULL);
+    t->level_cmd = cmd_of(t->level, jstr(o, "level_cmd"));
+    t->temp_cmd = cmd_of(t->temp, jstr(o, "temp_cmd"));
+    if (t->type == T_INFO) {
+        const cJSON *m = cJSON_GetObjectItem(o, "map");
+        if (cJSON_IsObject(m)) t->map = cJSON_Duplicate(m, true);
+        t->active = jstr(o, "active");
+        t->note = jstr(o, "note");
+        const cJSON *ln;
+        cJSON_ArrayForEach(ln, cJSON_GetObjectItem(o, "lines")) {
+            if (t->nlines >= MAX_LINES) break;
+            info_line_t *l = &t->lines[t->nlines];
+            l->topic = jstr(ln, "topic");
+            if (!l->topic) continue;
+            l->label = jstr(ln, "label");
+            l->unit = jstr(ln, "unit");
+            l->digits = jint(ln, "digits", 1);
+            const cJSON *lm = cJSON_GetObjectItem(ln, "map");
+            if (cJSON_IsObject(lm)) l->map = cJSON_Duplicate(lm, true);
+            t->nlines++;
+        }
+    }
     if (t->type == T_DIMMER && !t->level) t->type = T_UNKNOWN;
     if (t->type == T_SCENE && !t->cmd) t->type = T_UNKNOWN;
 }
@@ -404,7 +507,7 @@ void tiles_build(void *content_obj, void *tabbar_obj, const char *json)
     int total = 0;
     const cJSON *pg;
     cJSON_ArrayForEach(pg, pages) total += cJSON_GetArraySize(cJSON_GetObjectItem(pg, "tiles"));
-    s_tiles = calloc(total ? total : 1, sizeof(tile_t));
+    s_tiles = heap_caps_calloc(total ? total : 1, sizeof(tile_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     s_count = 0;
     s_npages = 0;
 
@@ -431,10 +534,13 @@ void tiles_for_each_topic(void (*cb)(const char *topic, void *ctx), void *ctx)
     for (int i = 0; i < s_count; i++) {
         tile_t *t = &s_tiles[i];
         if (t->type == T_UNKNOWN || t->type == T_SCENE) continue;
+        // info может состоять из одних строк, без основного значения
         if (t->state) cb(t->state, ctx);
         if (t->level) cb(t->level, ctx);
         if (t->temp) cb(t->temp, ctx);
         if (t->value) cb(t->value, ctx);
+        if (t->active) cb(t->active, ctx);
+        for (int k = 0; k < t->nlines; k++) cb(t->lines[k].topic, ctx);
     }
 }
 
@@ -447,7 +553,7 @@ void tiles_on_value(const char *topic, const char *value)
         switch (t->type) {
         case T_SWITCH:
             if (t->state && !strcmp(topic, t->state)) {
-                t->on = truthy(value);
+                t->on = truthy(value) != t->invert;
                 draw_switch(t);
             }
             break;
@@ -473,6 +579,31 @@ void tiles_on_value(const char *topic, const char *value)
         case T_SENSOR:
             if (t->value && !strcmp(topic, t->value)) draw_sensor(t, value);
             break;
+        case T_INFO: {
+            if (t->value && t->lbl_value && !strcmp(topic, t->value)) {
+                char b[40];
+                fmt_val(b, sizeof(b), value, t->digits, t->map);
+                lv_label_set_text(t->lbl_value, b);
+                if (t->lbl_unit) lv_obj_align_to(t->lbl_unit, t->lbl_value, LV_ALIGN_OUT_RIGHT_TOP, 3, 3);
+            }
+            bool lines_changed = false;
+            for (int k = 0; k < t->nlines; k++) {
+                info_line_t *l = &t->lines[k];
+                if (strcmp(topic, l->topic)) continue;
+                char b[32];
+                fmt_val(b, sizeof(b), value, l->digits, l->map);
+                snprintf(l->text, sizeof(l->text), "%s%s%s%s", l->label ? l->label : "",
+                         l->label ? " " : "", b, l->unit ? l->unit : "");
+                lines_changed = true;
+            }
+            if (lines_changed) draw_info_lines(t);
+            if (t->active && !strcmp(topic, t->active)) {
+                bool on = truthy(value);
+                lv_obj_set_style_bg_color(t->card, lv_color_hex(on ? C_CARD_ON : C_CARD), 0);
+                lv_obj_set_style_border_color(t->card, lv_color_hex(on ? 0x4A4330 : C_LINE), 0);
+            }
+            break;
+        }
         default:
             break;
         }

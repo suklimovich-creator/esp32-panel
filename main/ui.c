@@ -251,7 +251,7 @@ static void build_device(void)
 {
     scr_dev = screen();
 
-    lv_obj_t *back = button(scr_dev, LV_SYMBOL_LEFT "  Назад", C_CARD, C_TEXT, back_main);
+    lv_obj_t *back = button(scr_dev, "←  Назад", C_CARD, C_TEXT, back_main);
     lv_obj_set_pos(back, 16, 14);
     lv_obj_t *title = label(scr_dev, f22, C_TEXT, "Устройство");
     lv_obj_align(title, LV_ALIGN_TOP_RIGHT, -24, 28);
@@ -290,7 +290,7 @@ static void build_device(void)
     lv_obj_set_flex_flow(grid, LV_FLEX_FLOW_ROW_WRAP);
     lv_obj_remove_flag(grid, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_t *b;
-    b = button(grid, "Проверить обновление", C_CARD, C_TEXT, do_check);  lv_obj_set_width(b, 206);
+    b = button(grid, "Обновление", C_CARD, C_TEXT, do_check);  lv_obj_set_width(b, 206);
     b = button(grid, "Настройка Wi-Fi", C_CARD, C_TEXT, do_setup);       lv_obj_set_width(b, 206);
     b = button(grid, "Перезагрузить", C_CARD, C_TEXT, do_reboot);        lv_obj_set_width(b, 206);
     b = button(grid, "Забыть Wi-Fi", C_CARD, C_BAD, do_forget);          lv_obj_set_width(b, 206);
@@ -333,7 +333,7 @@ static void build_setup(void)
     lbl_setup_pass = label(scr_setup, f22, C_ACC, "");
     lv_obj_set_pos(lbl_setup_pass, 256, 274);
 
-    btn_setup_back = button(scr_setup, LV_SYMBOL_LEFT "  Назад", C_CARD, C_TEXT, back_main);
+    btn_setup_back = button(scr_setup, "←  Назад", C_CARD, C_TEXT, back_main);
     lv_obj_align(btn_setup_back, LV_ALIGN_BOTTOM_RIGHT, -20, -20);
 }
 

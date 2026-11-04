@@ -1,8 +1,10 @@
+*.log
+.devcontainer/
+.vscode/
 build/
 managed_components/
 release/
 sdkconfig
 sdkconfig.old
-.vscode/
-.devcontainer/
-*.log
+tools/sim/obj/
+tools/sim/sim

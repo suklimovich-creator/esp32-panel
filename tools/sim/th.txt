@@ -1,0 +1,4 @@
+/devices/th/controls/tgt=24
+/devices/th/controls/cur=21.5
+/devices/th/controls/mode=1
+/devices/th/controls/st=1

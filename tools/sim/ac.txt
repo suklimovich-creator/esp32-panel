@@ -1,0 +1,7 @@
+/devices/ac_cool/controls/target_temp=24
+/devices/ac_cool/controls/current_temp=26.5
+/devices/ac_cool/controls/power=1
+/devices/ac_cool/controls/mode=cool
+/devices/ac_cool/controls/fan_mode=medium
+/devices/ac_cool/controls/swing_mode=position_2
+/devices/ac_cool/controls/swing_h_mode=position_1

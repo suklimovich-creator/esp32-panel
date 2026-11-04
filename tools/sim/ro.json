@@ -1,0 +1,1 @@
+{"type": "info", "title": "Римская штора", "w": 1, "pad": {"kind": "cover", "style": "roller", "pos": "/devices/ro/controls/pos", "pos_cmd": "ro/pos/on", "open": "100", "close": "0", "stop_cmd": "/devices/ro/controls/stop/on", "stop": "2"}, "value": "/devices/ro/controls/pos", "unit": "%", "digits": 0}

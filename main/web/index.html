@@ -25,6 +25,7 @@ button:disabled{opacity:.5}
 .msg{margin-top:10px;min-height:1.2em;color:var(--dim)}
 .ok{color:var(--ok)}.bad{color:var(--bad)}
 progress{width:100%;height:8px;margin-top:10px;accent-color:var(--acc)}
+textarea{width:100%;min-height:260px;padding:10px 12px;border-radius:10px;border:1px solid var(--line);background:#101218;color:var(--text);font:12px/1.45 ui-monospace,Consolas,monospace;resize:vertical}
 </style>
 </head>
 <body>
@@ -55,6 +56,20 @@ progress{width:100%;height:8px;margin-top:10px;accent-color:var(--acc)}
 </section>
 
 <section>
+<h2>Раскладка панели</h2>
+<div id="lsrc" class="msg" style="margin:0 0 8px"></div>
+<textarea id="layout" spellcheck="false"></textarea>
+<div class="btns">
+<button class="main" id="lsave">Сохранить</button>
+<button id="lfile">Из файла…</button>
+<button id="ldown">Скачать</button>
+<button id="lreset">Вернуть встроенную</button>
+</div>
+<input id="lpick" type="file" accept=".json,application/json" hidden>
+<div class="msg" id="lmsg"></div>
+</section>
+
+<section>
 <h2>Прошивка</h2>
 <dl><dt>Версия</dt><dd id="ver">…</dd><dt>Обновление</dt><dd id="ota">…</dd></dl>
 <div class="btns"><button id="check">Проверить сервер</button></div>
@@ -75,6 +90,34 @@ let filled = false;
 
 function esc(s){return String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]))}
 function say(el, text, cls){el.textContent = text; el.className = 'msg ' + (cls||'');}
+function ago(s){ if(s < 60) return s + ' с'; if(s < 3600) return Math.floor(s/60) + ' мин';
+  if(s < 86400) return Math.floor(s/3600) + ' ч ' + Math.floor(s%3600/60) + ' мин'; return Math.floor(s/86400) + ' дн'; }
+
+async function loadLayout(){
+  try{
+    const r = await fetch('/api/layout');
+    const txt = await r.text();
+    try{ $('layout').value = JSON.stringify(JSON.parse(txt), null, 2); }catch(e){ $('layout').value = txt; }
+    $('lsrc').textContent = r.headers.get('X-Layout-Source') === 'custom' ? 'Загруженная раскладка' : 'Встроенная раскладка (по умолчанию)';
+  }catch(e){ $('lsrc').textContent = 'не удалось получить раскладку'; }
+}
+$('lsave').onclick = async () => {
+  let body = $('layout').value;
+  try{ body = JSON.stringify(JSON.parse(body)); }catch(e){ say($('lmsg'), 'ошибка в JSON: ' + e.message, 'bad'); return; }
+  const r = await (await fetch('/api/layout', {method:'POST', headers:{'Content-Type':'application/json'}, body})).json();
+  say($('lmsg'), r.message, r.ok ? 'ok' : 'bad');
+};
+$('lfile').onclick = () => $('lpick').click();
+$('lpick').onchange = e => { const f = e.target.files[0]; if(!f) return;
+  f.text().then(t => { $('layout').value = t; say($('lmsg'), 'файл загружен в поле - проверьте и нажмите «Сохранить»'); }); };
+$('ldown').onclick = () => { const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([$('layout').value], {type:'application/json'}));
+  a.download = ($('title').textContent || 'panel') + '-layout.json'; a.click(); };
+$('lreset').onclick = async () => {
+  if(!confirm('Вернуть встроенную раскладку?')) return;
+  const r = await (await fetch('/api/layout/reset', {method:'POST'})).json();
+  say($('lmsg'), r.message, r.ok ? 'ok' : 'bad');
+};
 
 async function load(){
   try{
@@ -83,10 +126,12 @@ async function load(){
     $('sub').textContent = s.connected ? 'в сети ' + s.ssid + ' · ' + s.ip : (s.ap ? 'точка доступа ' + s.ap_ssid : 'нет сети');
     const up = s.uptime_s, h = Math.floor(up/3600), m = Math.floor(up%3600/60);
     const rows = [
-      ['Wi-Fi', s.connected ? esc(s.ssid) + ', ' + s.rssi + ' дБм' : (s.ssid ? 'нет связи с ' + esc(s.ssid) : 'не настроен')],
+      ['Wi-Fi', s.connected ? esc(s.ssid) + ', ' + s.rssi + ' дБм, в сети ' + ago(s.wifi_online_s) : (s.ssid ? 'нет связи с ' + esc(s.ssid) : 'не настроен')],
+      ['Обрывы Wi-Fi', s.wifi_drops ? s.wifi_drops + ', последний ' + ago(s.wifi_last_drop_ago_s) + ' назад: ' + esc(s.wifi_last_reason) : 'не было'],
+      ['MQTT', s.mqtt_ok ? 'подключён, плиток ' + s.tiles : 'нет связи с брокером'],
       ['Адрес', s.ip || '—'],
       ['Работает', h + ' ч ' + m + ' мин'],
-      ['Память', s.heap_kb + ' КБ, PSRAM ' + s.psram_kb + ' КБ'],
+      ['Память', s.heap_kb + ' КБ (минимум ' + s.heap_min_kb + '), PSRAM ' + s.psram_kb + ' КБ'],
       ['Слот', esc(s.partition)],
     ];
     $('st').innerHTML = rows.map(r => '<dt>' + r[0] + '</dt><dd>' + r[1] + '</dd>').join('');
@@ -151,7 +196,7 @@ $('reboot').onclick = async () => {
   say($('umsg'), 'перезагрузка…');
 };
 
-load(); setInterval(load, 5000);
+load(); loadLayout(); setInterval(load, 5000);
 </script>
 </body>
 </html>

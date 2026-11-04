@@ -16,6 +16,7 @@ void app_main(void)
         nvs_flash_init();
     }
     settings_load();
+    lv_mem_psram_link();
 
     lcd_init();
     touch_init();
@@ -27,5 +28,6 @@ void app_main(void)
 
     net_start();
     web_start();
+    mq_start();
     ota_start();
 }

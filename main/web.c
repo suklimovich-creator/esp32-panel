@@ -75,8 +75,17 @@ static esp_err_t h_status(httpd_req_t *req)
     cJSON_AddStringToObject(j, "mqtt", g_cfg.mqtt);
     cJSON_AddNumberToObject(j, "bright", g_cfg.bright);
     cJSON_AddStringToObject(j, "ota", ota_state_text());
+    cJSON_AddBoolToObject(j, "mqtt_ok", mq_connected());
+    cJSON_AddNumberToObject(j, "tiles", tiles_count());
+    cJSON_AddNumberToObject(j, "wifi_drops", ns.disconnects);
+    if (ns.disconnects) {
+        cJSON_AddStringToObject(j, "wifi_last_reason", net_reason_text(ns.last_reason));
+        cJSON_AddNumberToObject(j, "wifi_last_drop_ago_s", ns.last_drop_ago_s);
+    }
+    cJSON_AddNumberToObject(j, "wifi_online_s", ns.online_s);
     cJSON_AddNumberToObject(j, "uptime_s", (double)(esp_timer_get_time() / 1000000));
     cJSON_AddNumberToObject(j, "heap_kb", heap_caps_get_free_size(MALLOC_CAP_INTERNAL) / 1024);
+    cJSON_AddNumberToObject(j, "heap_min_kb", heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL) / 1024);
     cJSON_AddNumberToObject(j, "psram_kb", heap_caps_get_free_size(MALLOC_CAP_SPIRAM) / 1024);
     return send_json(req, j);
 }
@@ -168,6 +177,60 @@ static esp_err_t h_update(httpd_req_t *req)
     return send_ok(req, true, "прошивка записана, перезагрузка");
 }
 
+static esp_err_t h_layout_get(httpd_req_t *req)
+{
+    bool custom = false;
+    char *s = layout_get(&custom);
+    httpd_resp_set_type(req, "application/json; charset=utf-8");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    httpd_resp_set_hdr(req, "X-Layout-Source", custom ? "custom" : "builtin");
+    esp_err_t err = httpd_resp_sendstr(req, s);
+    free(s);
+    return err;
+}
+
+static esp_err_t h_layout_put(httpd_req_t *req)
+{
+    if (req->content_len <= 0 || req->content_len > 200 * 1024) return send_ok(req, false, "пустой или слишком большой файл");
+    char *buf = malloc(req->content_len + 1);
+    if (!buf) return send_ok(req, false, "не хватает памяти");
+    int got = 0;
+    while (got < req->content_len) {
+        int r = httpd_req_recv(req, buf + got, req->content_len - got);
+        if (r == HTTPD_SOCK_ERR_TIMEOUT) continue;
+        if (r <= 0) { free(buf); return ESP_FAIL; }
+        got += r;
+    }
+    buf[got] = 0;
+    // Проверяем до записи: битый JSON не должен оставить экран без панели.
+    cJSON *j = cJSON_Parse(buf);
+    const cJSON *pages = cJSON_GetObjectItem(j, "pages");
+    bool ok = cJSON_IsArray(pages) && cJSON_GetArraySize(pages) > 0;
+    char err_at[80] = "";
+    if (!j) {
+        const char *e = cJSON_GetErrorPtr();
+        snprintf(err_at, sizeof(err_at), "ошибка JSON около: %.40s", e ? e : "?");
+    }
+    cJSON_Delete(j);
+    if (!ok) {
+        free(buf);
+        return send_ok(req, false, err_at[0] ? err_at : "нет списка pages");
+    }
+    esp_err_t err = layout_save(buf, got);
+    free(buf);
+    if (err != ESP_OK) return send_ok(req, false, esp_err_to_name(err));
+    reboot_later(1200);
+    return send_ok(req, true, "раскладка сохранена, экран перезагружается");
+}
+
+static esp_err_t h_layout_reset(httpd_req_t *req)
+{
+    esp_err_t err = layout_reset();
+    if (err != ESP_OK) return send_ok(req, false, esp_err_to_name(err));
+    reboot_later(1200);
+    return send_ok(req, true, "возвращена встроенная раскладка, перезагрузка");
+}
+
 static esp_err_t h_ota_check(httpd_req_t *req)
 {
     ota_check_now();
@@ -193,7 +256,7 @@ void web_start(void)
 {
     httpd_config_t cfg = HTTPD_DEFAULT_CONFIG();
     cfg.stack_size = 8192;
-    cfg.max_uri_handlers = 12;
+    cfg.max_uri_handlers = 16;
     cfg.lru_purge_enable = true;
     cfg.recv_wait_timeout = 30;
     cfg.uri_match_fn = httpd_uri_match_wildcard;
@@ -210,6 +273,9 @@ void web_start(void)
         {.uri = "/api/update", .method = HTTP_POST, .handler = h_update},
         {.uri = "/api/ota/check", .method = HTTP_POST, .handler = h_ota_check},
         {.uri = "/api/reboot", .method = HTTP_POST, .handler = h_reboot},
+        {.uri = "/api/layout", .method = HTTP_GET, .handler = h_layout_get},
+        {.uri = "/api/layout", .method = HTTP_POST, .handler = h_layout_put},
+        {.uri = "/api/layout/reset", .method = HTTP_POST, .handler = h_layout_reset},
     };
     for (size_t i = 0; i < sizeof(uris) / sizeof(uris[0]); i++) {
         httpd_register_uri_handler(srv, &uris[i]);

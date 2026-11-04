@@ -1,0 +1,37 @@
+{
+  "version": 1,
+  "pages": [
+    {
+      "title": "Гостиная",
+      "tiles": [
+        { "type": "dimmer", "title": "Подсветка",
+          "state": "/devices/wb-led_122/controls/CCT1",
+          "level": "/devices/wb-led_122/controls/CCT1 Brightness",
+          "temp": "/devices/wb-led_122/controls/CCT1 Temperature" },
+        { "type": "sensor", "title": "Столовая", "unit": "°C",
+          "value": "/devices/wb-msw-v4_149/controls/Temperature" },
+        { "type": "sensor", "title": "Влажность", "unit": "%", "digits": 0,
+          "value": "/devices/wb-msw-v4_149/controls/Humidity" },
+        { "type": "sensor", "title": "На улице", "unit": "°C",
+          "value": "/devices/weather/controls/temperature" },
+        { "type": "scene", "title": "Выключить всё",
+          "cmd": "/devices/lightingScenes/controls/off_all/on" }
+      ]
+    },
+    {
+      "title": "Сцены",
+      "tiles": [
+        { "type": "scene", "title": "Вечер",   "cmd": "/devices/lightingScenes/controls/evening/on" },
+        { "type": "scene", "title": "Ужин",    "cmd": "/devices/lightingScenes/controls/dinner/on" },
+        { "type": "scene", "title": "Кино",    "cmd": "/devices/lightingScenes/controls/cinema/on" },
+        { "type": "scene", "title": "Чтение",  "cmd": "/devices/lightingScenes/controls/reading/on" },
+        { "type": "scene", "title": "Релакс",  "cmd": "/devices/lightingScenes/controls/relax/on" },
+        { "type": "scene", "title": "Гости",   "cmd": "/devices/lightingScenes/controls/guests/on" },
+        { "type": "scene", "title": "Ярко",    "cmd": "/devices/lightingScenes/controls/bright/on" },
+        { "type": "scene", "title": "Уборка",  "cmd": "/devices/lightingScenes/controls/cleaning/on" },
+        { "type": "scene", "title": "Спать",   "cmd": "/devices/lightingScenes/controls/bedtime/on" },
+        { "type": "scene", "title": "Выключить всё", "cmd": "/devices/lightingScenes/controls/off_all/on" }
+      ]
+    }
+  ]
+}

@@ -14,6 +14,8 @@
 #include "esp_mac.h"
 #include "esp_log.h"
 #include "lwip/sockets.h"
+#include "ping/ping_sock.h"
+#include "esp_heap_caps.h"
 #include "cJSON.h"
 #include "app.h"
 
@@ -21,6 +23,9 @@ static const char *TAG = "net";
 
 #define FALLBACK_AP_AFTER_US (60LL * 1000000)   // нет сети минуту - включаем точку доступа
 #define AP_OFF_AFTER_US (120LL * 1000000)       // сеть появилась - через 2 минуты точку выключаем
+#define HEALTH_EVERY_US (20LL * 1000000)        // проверка связи с роутером
+#define HEALTH_FAILS 3                          // столько проверок подряд без ответа - переподключаемся
+#define REASON_NO_REPLY 1000                    // своя причина: связь есть, а роутер не отвечает
 
 static esp_netif_t *s_sta, *s_ap;
 static esp_timer_handle_t s_retry_timer, s_fallback_timer, s_ap_off_timer;
@@ -28,6 +33,12 @@ static int s_backoff_s = 2;
 static bool s_connected, s_ap_active, s_sntp_started, s_dns_running;
 static char s_ip[16];
 static char s_ap_ssid[33], s_ap_pass[16];
+static int s_disconnects, s_last_reason;
+static int64_t s_last_drop_us, s_online_since_us;
+static esp_timer_handle_t s_health_timer;
+static esp_ip4_addr_t s_gw;
+static int s_health_fails;
+static bool s_forced_reconnect, s_ping_running;
 
 // Имя сети в Wi-Fi - ровно 32 байта, без обязательного нуля в конце.
 static void copy_bytes(uint8_t *dst, size_t size, const char *src)
@@ -134,13 +145,66 @@ static void ap_off_cb(void *arg)
     if (s_connected) ap_stop();
 }
 
+// ------------------------------------------------------------ health check
+// Wi-Fi может считать себя подключённым, а пакеты не ходят. Раз в 20 секунд
+// пингуем роутер; три раза подряд нет ответа - переподключаемся сами.
+static void ping_end(esp_ping_handle_t h, void *arg)
+{
+    uint32_t received = 0;
+    esp_ping_get_profile(h, ESP_PING_PROF_REPLY, &received, sizeof(received));
+    esp_ping_delete_session(h);
+    s_ping_running = false;
+    if (!s_connected) return;
+    if (received > 0) {
+        s_health_fails = 0;
+        return;
+    }
+    s_health_fails++;
+    ESP_LOGW(TAG, "роутер не отвечает (%d из %d), свободно внутренней памяти %u КБ",
+             s_health_fails, HEALTH_FAILS, (unsigned)(heap_caps_get_free_size(MALLOC_CAP_INTERNAL) / 1024));
+    if (s_health_fails >= HEALTH_FAILS) {
+        s_health_fails = 0;
+        s_forced_reconnect = true;
+        esp_wifi_disconnect();      // дальше - обычное переподключение
+    }
+}
+
+static void health_cb(void *arg)
+{
+    if (!s_connected || s_ping_running || !s_gw.addr) return;
+    esp_ping_config_t pc = ESP_PING_DEFAULT_CONFIG();
+    pc.target_addr.type = IPADDR_TYPE_V4;
+    pc.target_addr.u_addr.ip4.addr = s_gw.addr;
+    pc.count = 3;
+    pc.interval_ms = 300;
+    pc.timeout_ms = 1000;
+    pc.task_stack_size = 3072;
+    esp_ping_callbacks_t cbs = {.on_ping_end = ping_end};
+    esp_ping_handle_t h;
+    if (esp_ping_new_session(&pc, &cbs, &h) == ESP_OK) {
+        s_ping_running = true;
+        esp_ping_start(h);
+    }
+}
+
 // ------------------------------------------------------------ events
 static void on_event(void *arg, esp_event_base_t base, int32_t id, void *data)
 {
     if (base == WIFI_EVENT && id == WIFI_EVENT_STA_START) {
         if (g_cfg.ssid[0]) esp_wifi_connect();
     } else if (base == WIFI_EVENT && id == WIFI_EVENT_STA_DISCONNECTED) {
+        wifi_event_sta_disconnected_t *d = data;
         bool was = s_connected;
+        int reason = s_forced_reconnect ? REASON_NO_REPLY : d->reason;
+        s_forced_reconnect = false;
+        if (was) {
+            s_disconnects++;
+            s_last_reason = reason;
+            s_last_drop_us = esp_timer_get_time();
+            ESP_LOGW(TAG, "обрыв связи №%d: %s (%d)", s_disconnects, net_reason_text(reason), reason);
+        } else {
+            ESP_LOGI(TAG, "не удалось подключиться: %s (%d)", net_reason_text(d->reason), d->reason);
+        }
         s_connected = false;
         s_ip[0] = 0;
         if (g_cfg.ssid[0]) {
@@ -156,7 +220,10 @@ static void on_event(void *arg, esp_event_base_t base, int32_t id, void *data)
     } else if (base == IP_EVENT && id == IP_EVENT_STA_GOT_IP) {
         ip_event_got_ip_t *e = data;
         snprintf(s_ip, sizeof(s_ip), IPSTR, IP2STR(&e->ip_info.ip));
+        s_gw = e->ip_info.gw;
+        s_health_fails = 0;
         s_connected = true;
+        s_online_since_us = esp_timer_get_time();
         s_backoff_s = 2;
         esp_timer_stop(s_fallback_timer);
         ESP_LOGI(TAG, "в сети, адрес %s", s_ip);
@@ -201,6 +268,9 @@ void net_start(void)
     esp_timer_create(&t1, &s_retry_timer);
     esp_timer_create(&t2, &s_fallback_timer);
     esp_timer_create(&t3, &s_ap_off_timer);
+    const esp_timer_create_args_t t4 = {.callback = health_cb, .name = "wifi_health"};
+    esp_timer_create(&t4, &s_health_timer);
+    esp_timer_start_periodic(s_health_timer, HEALTH_EVERY_US);
 
     esp_wifi_set_mode(WIFI_MODE_STA);
     if (g_cfg.ssid[0]) {
@@ -235,6 +305,30 @@ void net_get_status(net_status_t *st)
     snprintf(st->ap_ssid, sizeof(st->ap_ssid), "%s", s_ap_ssid);
     snprintf(st->ap_pass, sizeof(st->ap_pass), "%s", s_ap_pass);
     st->time_valid = time(NULL) > 1735689600;   // позже 2025 года - часы выставлены
+    int64_t now = esp_timer_get_time();
+    st->disconnects = s_disconnects;
+    st->last_reason = s_last_reason;
+    st->last_drop_ago_s = s_last_drop_us ? (int)((now - s_last_drop_us) / 1000000) : -1;
+    st->online_s = s_connected ? (int)((now - s_online_since_us) / 1000000) : 0;
+}
+
+const char *net_reason_text(int r)
+{
+    switch (r) {
+    case WIFI_REASON_AUTH_EXPIRE: return "истекла авторизация";
+    case WIFI_REASON_AUTH_LEAVE: return "роутер отключил";
+    case WIFI_REASON_ASSOC_LEAVE: return "отключились сами";
+    case WIFI_REASON_ASSOC_EXPIRE: return "роутер отключил за неактивность";
+    case WIFI_REASON_4WAY_HANDSHAKE_TIMEOUT:
+    case WIFI_REASON_HANDSHAKE_TIMEOUT: return "не прошёл обмен ключами";
+    case WIFI_REASON_BEACON_TIMEOUT: return "пропал сигнал роутера";
+    case WIFI_REASON_NO_AP_FOUND: return "сеть не найдена";
+    case WIFI_REASON_AUTH_FAIL: return "неверный пароль";
+    case WIFI_REASON_ASSOC_FAIL: return "роутер не принял";
+    case WIFI_REASON_CONNECTION_FAIL: return "ошибка подключения";
+    case REASON_NO_REPLY: return "роутер перестал отвечать, переподключились";
+    default: return "другая причина";
+    }
 }
 
 char *net_scan_json(void)

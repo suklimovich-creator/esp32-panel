@@ -1,0 +1,5 @@
+# Внешние библиотеки. Скачиваются сами при первой сборке
+# с components.espressif.com в папку managed_components/.
+dependencies:
+  idf: ">=5.5"
+  lvgl/lvgl: "9.2.2"

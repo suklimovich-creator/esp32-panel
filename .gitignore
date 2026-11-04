@@ -1,0 +1,8 @@
+build/
+managed_components/
+release/
+sdkconfig
+sdkconfig.old
+.vscode/
+.devcontainer/
+*.log

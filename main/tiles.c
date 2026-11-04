@@ -7,7 +7,9 @@
 //   sensor  - значение:     value, [unit], [digits]
 //   info    - сводка (кондиционер, термостат, шторы...): [value], [unit],
 //             [digits], [map], [lines: [{label, topic, unit, digits, map}]],
-//             [active] - канал «работает», [note] - подпись без данных
+//             [active] - канал «работает», [note] - подпись без данных,
+//             [invert] - значение 0-100 показывать наоборот (шторы),
+//             [pad] - пульт по нажатию (pads.c)
 // Явные адреса команд (с сервера, например Sprut.hub): state_cmd,
 // level_cmd, temp_cmd; у выключателя - cmd. У выключателя бывает invert.
 // У всех: title, w - ширина в колонках 1-3 (диммер по умолчанию 3, остальные 1).
@@ -53,6 +55,7 @@ typedef struct {
     info_line_t lines[MAX_LINES];
     int nlines;
     lv_obj_t *lbl_lines;
+    pad_t *pad;                     // пульт по нажатию (info)
     int lvl, tmp;
     lv_obj_t *card, *lbl_title, *lbl_state, *lbl_value, *lbl_unit, *sl_level, *sl_temp;
     uint32_t level_pub, temp_pub, level_touch, temp_touch;
@@ -196,13 +199,22 @@ static void draw_info_lines(tile_t *t)
     if (!t->lbl_lines) return;
     char buf[160] = "";
     size_t n = 0;
-    for (int i = 0; i < t->nlines; i++) {
+    bool on = true;
+    if (t->pad && pad_power(t->pad, &on) && !on) {
+        // Выключенный прибор помнит режим, но показывать его - путать.
+        snprintf(buf, sizeof(buf), "Выключен");
+        n = 1;
+    }
+    // Узкая плитка - по строке на подробность, широкая - всё в строку.
+    const char *sep = t->w == 1 ? "\n" : "  ·  ";
+    for (int i = 0; on && i < t->nlines; i++) {
         if (!t->lines[i].text[0]) continue;
-        n += snprintf(buf + n, sizeof(buf) - n, "%s%s", n ? "  ·  " : "", t->lines[i].text);
+        n += snprintf(buf + n, sizeof(buf) - n, "%s%s", n ? sep : "", t->lines[i].text);
         if (n >= sizeof(buf)) break;
     }
     if (!n && t->note) snprintf(buf, sizeof(buf), "%s", t->note);
     lv_label_set_text(t->lbl_lines, buf);
+    if (t->lbl_value) lv_obj_set_style_text_color(t->lbl_value, lv_color_hex(on ? C_TEXT : C_DIM), 0);
 }
 
 // ------------------------------------------------------------ events
@@ -268,6 +280,12 @@ static void scene_cb(lv_event_t *e)
     lv_obj_set_style_border_color(t->card, lv_color_hex(C_ACC), 0);
     lv_timer_t *tm = lv_timer_create(scene_restore, 600, t);
     lv_timer_set_repeat_count(tm, 1);
+}
+
+static void pad_cb(lv_event_t *e)
+{
+    tile_t *t = lv_event_get_user_data(e);
+    if (t->pad) pad_open(t->pad);
 }
 
 // ------------------------------------------------------------ build
@@ -351,8 +369,15 @@ static void build_tile(lv_obj_t *page, tile_t *t)
         }
         break;
 
-    case T_INFO:
-        t->card = card(page, w, t->nlines ? 104 : 84);
+    case T_INFO: {
+        // Узкой плитке - две строки подробностей, широкой хватает одной.
+        bool two = t->w == 1 && t->nlines > 1;
+        t->card = card(page, w, two ? 116 : t->nlines ? 104 : 84);
+        if (t->pad) {
+            lv_obj_add_flag(t->card, LV_OBJ_FLAG_CLICKABLE);
+            lv_obj_set_style_bg_color(t->card, lv_color_hex(C_CARD_ON), LV_STATE_PRESSED);
+            lv_obj_add_event_cb(t->card, pad_cb, LV_EVENT_CLICKED, t);
+        }
         t->lbl_title = ui_label(t->card, f14, C_DIM, t->title);
         if (t->value) {
             t->lbl_value = ui_label(t->card, f28b, C_TEXT, "—");
@@ -365,11 +390,13 @@ static void build_tile(lv_obj_t *page, tile_t *t)
         if (t->nlines || t->note) {
             t->lbl_lines = ui_label(t->card, f14, C_DIM, "");
             lv_obj_set_width(t->lbl_lines, w - 24);
+            if (two) lv_obj_set_height(t->lbl_lines, 2 * lv_font_get_line_height(f14) + 2);
             lv_label_set_long_mode(t->lbl_lines, LV_LABEL_LONG_DOT);
             lv_obj_align(t->lbl_lines, LV_ALIGN_BOTTOM_LEFT, 0, 2);
             draw_info_lines(t);
         }
         break;
+    }
 
     default: {
         t->card = card(page, w, 62);
@@ -422,6 +449,7 @@ static void parse_tile(tile_t *t, const cJSON *o)
         if (cJSON_IsObject(m)) t->map = cJSON_Duplicate(m, true);
         t->active = jstr(o, "active");
         t->note = jstr(o, "note");
+        t->pad = pad_parse(o, t->title);
         const cJSON *ln;
         cJSON_ArrayForEach(ln, cJSON_GetObjectItem(o, "lines")) {
             if (t->nlines >= MAX_LINES) break;
@@ -541,6 +569,7 @@ void tiles_for_each_topic(void (*cb)(const char *topic, void *ctx), void *ctx)
         if (t->value) cb(t->value, ctx);
         if (t->active) cb(t->active, ctx);
         for (int k = 0; k < t->nlines; k++) cb(t->lines[k].topic, ctx);
+        if (t->pad) pad_topics(t->pad, cb, ctx);
     }
 }
 
@@ -580,13 +609,18 @@ void tiles_on_value(const char *topic, const char *value)
             if (t->value && !strcmp(topic, t->value)) draw_sensor(t, value);
             break;
         case T_INFO: {
+            bool lines_changed = t->pad && pad_on_value(t->pad, topic, value);
             if (t->value && t->lbl_value && !strcmp(topic, t->value)) {
-                char b[40];
-                fmt_val(b, sizeof(b), value, t->digits, t->map);
+                char b[40], inv[16];
+                const char *v = value;
+                if (t->invert && !t->map) {
+                    snprintf(inv, sizeof(inv), "%g", 100 - atof(value));
+                    v = inv;
+                }
+                fmt_val(b, sizeof(b), v, t->digits, t->map);
                 lv_label_set_text(t->lbl_value, b);
                 if (t->lbl_unit) lv_obj_align_to(t->lbl_unit, t->lbl_value, LV_ALIGN_OUT_RIGHT_TOP, 3, 3);
             }
-            bool lines_changed = false;
             for (int k = 0; k < t->nlines; k++) {
                 info_line_t *l = &t->lines[k];
                 if (strcmp(topic, l->topic)) continue;

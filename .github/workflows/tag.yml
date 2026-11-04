@@ -1,0 +1,27 @@
+# Тег версии ставится сам: после пуша в main, если в CMakeLists.txt
+# версия (PROJECT_VER), у которой тега ещё нет.
+name: Тег версии
+on:
+  push:
+    branches: [main]
+permissions:
+  contents: write
+jobs:
+  tag:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Поставить тег новой версии
+        run: |
+          V=$(sed -n 's/.*PROJECT_VER *"\([^"]*\)".*/\1/p' CMakeLists.txt)
+          [ -n "$V" ] || { echo "версия не найдена"; exit 1; }
+          T="v$V"
+          if git rev-parse -q --verify "refs/tags/$T" >/dev/null; then
+            echo "$T уже есть"
+            exit 0
+          fi
+          git tag "$T"
+          git push origin "$T"
+          echo "поставлен $T"

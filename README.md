@@ -60,6 +60,7 @@ JSON со страницами и плитками. Откуда экран её
 | `scene` | `cmd`, `payload`* ("1") | отправляет команду |
 | `sensor` | `value`, `unit`*, `digits`* (1) | показывает значение |
 | `info` | `value`*, `unit`*, `digits`*, `map`*, `lines`* (до 3: `label`, `topic`, `unit`, `digits`, `map`), `active`*, `note`* | сводка — кондиционер, термостат, шторы, график: значение крупно и строка подробностей; рамка подсвечена, когда `active` включён |
+| ↳ `pad` | `kind`: `climate` — `target`, `target_cmd`, `current`, `min`, `max`, `step`, `power`, `power_cmd`, `on`, `off`, `mode`, `mode_cmd`, `modes` (`[значение, подпись, cool/heat]`), `fan`, `fan_cmd`, `fans`, `tone`; `cover` — `pos`, `pos_cmd`, `style` (`curtain`/`roller`), `invert`, `open`, `close`, `stop_cmd`, `stop` | пульт во весь экран по нажатию на сводку (с 0.4) |
 
 У всех есть `title` и `w` — ширина в колонках, 1–3 (диммер по умолчанию 3, остальные 1).
 Название страницы (`title` у страницы) — надпись на вкладке. Звёздочкой отмечены необязательные поля. Команда по умолчанию —

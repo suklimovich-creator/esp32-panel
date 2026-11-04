@@ -109,7 +109,7 @@ static float s_v0;                    // значение в начале пер
 static float s_scale_shown;           // где стоит шкала кондиционера (плавно, без шага)
 static int s_sheet;                   // 0 - нет, иначе Z_CHIP/Z_FAN/Z_SWV/Z_SWH/Z_MODEBTN
 
-static lv_font_t *F76, *F46, *F32, *F17, *F13, *F12;
+static lv_font_t *F76, *F60, *F46, *F32, *F22S, *F17, *F13, *F12;
 
 extern const uint8_t inter_regular_start[] asm("_binary_inter_regular_ttf_start");
 extern const uint8_t inter_regular_end[] asm("_binary_inter_regular_ttf_end");
@@ -127,7 +127,9 @@ static void fonts(void)
 {
     if (F76) return;
     F76 = ttf(true, 76);
+    F60 = ttf(true, 62);
     F46 = ttf(true, 46);
+    F22S = ttf(true, 21);
     F32 = ttf(true, 32);
     F17 = ttf(true, 17);
     F13 = ttf(true, 13);
@@ -748,31 +750,35 @@ static void draw_ac(pad_t *p)
     d_head(p, p->power_cmd != NULL, on);
 }
 
-// ---- циферблат термостата (static/js: tdial, коробка 298 с центром дуги 149,163.9)
+// ---- циферблат термостата (static/js: tdial, коробка 298 с центром дуги 149,163.9).
+// Термостат без кнопок снизу - крупнее (DK), у фанкойла под ним режим и скорость.
 #define D_CX 240.0f
-#define D_CY 225.0f
-#define D_R 98.34f
 #define D_A0 148.0f
 #define D_SW 244.0f
+static float DK = 1, DCY = 225;
+#define D_R (98.34f * DK)
 
 static float d_ang(const pad_t *p, float t) { return D_A0 + clampf((t - p->min) / (p->max - p->min), 0, 1) * D_SW; }
 
 static void dpt(float r, float deg, float *x, float *y)
 {
     float a = deg * (float)M_PI / 180;
-    *x = D_CX + r * cosf(a);
-    *y = D_CY + r * sinf(a);
+    *x = D_CX + r * DK * cosf(a);
+    *y = DCY + r * DK * sinf(a);
 }
 
 static void draw_dial(pad_t *p)
 {
+    bool big = !p->nmodes && !p->nfans;
+    DK = big ? 1.32f : 1.0f;
+    DCY = big ? 262 : 225;
     bool on = powered(p);
     const char *st = p->state_now;
     bool live = on && st[0] && strcmp(st, "0") != 0;
     bool cool = live && !strcmp(st, "2");
     uint32_t fill = !on ? 0x5A5B60 : cool ? K_DCOOL : live || !p->state ? K_HEAT : 0x8A8B90;
     d_rect(0, 0, 480, 480, 0, K_BG2, LV_OPA_COVER);
-    zone(60, 80, 420, 330, Z_DIAL, 0);
+    zone(40, (int)(DCY - 150 * DK), 440, (int)(DCY + 75 * DK), Z_DIAL, 0);
 
     // шкала: штрих на градус, подписи на каждой четверти
     float range = p->max - p->min;
@@ -784,37 +790,37 @@ static void draw_dial(pad_t *p)
         float a = d_ang(p, t), x1, y1, x2, y2;
         dpt(105.8f, a, &x1, &y1);
         dpt(mj ? 115.3f : 111.1f, a, &x2, &y2);
-        d_line(x1, y1, x2, y2, mj ? 2 : 1.2f, 0xFFFFFF, mj ? 204 : 102);
+        d_line(x1, y1, x2, y2, (mj ? 2 : 1.2f) * DK, 0xFFFFFF, mj ? 204 : 102);
         if (mj) {
             float lx, ly;
             dpt(129, a, &lx, &ly);
             snprintf(b, sizeof(b), "%d", t);
-            d_text(F12, 0xFFFFFF, 140, lx, ly + 4, 1, b);
+            d_text(big ? F13 : F12, 0xFFFFFF, 140, lx, ly + 4 * DK, 1, b);
         }
     }
     float at = p->has_target ? d_ang(p, p->v_target) : D_A0;
-    d_arc(D_CX, D_CY, D_R, 7.45f, D_A0, D_A0 + D_SW, 0xFFFFFF, 36);
-    if (p->has_target) d_arc(D_CX, D_CY, D_R, 7.45f, D_A0, at, fill, on ? LV_OPA_COVER : 140);
+    d_arc(D_CX, DCY, D_R, 7.45f * DK, D_A0, D_A0 + D_SW, 0xFFFFFF, 36);
+    if (p->has_target) d_arc(D_CX, DCY, D_R, 7.45f * DK, D_A0, at, fill, on ? LV_OPA_COVER : 140);
     if (p->has_current) {
         float a = d_ang(p, p->v_current), x1, y1, x2, y2;
         dpt(90.9f, a, &x1, &y1);
         dpt(116.5f, a, &x2, &y2);
-        d_line(x1, y1, x2, y2, 7.45f, K_BG, LV_OPA_COVER);
-        d_line(x1, y1, x2, y2, 3.4f, 0xFFFFFF, LV_OPA_COVER);
+        d_line(x1, y1, x2, y2, 7.45f * DK, K_BG, LV_OPA_COVER);
+        d_line(x1, y1, x2, y2, 3.4f * DK, 0xFFFFFF, LV_OPA_COVER);
     }
     if (p->has_target) {
         float x, y;
-        dpt(D_R, at, &x, &y);
-        d_circle(x, y, 7, K_BG2, LV_OPA_COVER);
-        d_circle(x, y, 5, 0xFFFFFF, LV_OPA_COVER);
+        dpt(98.34f, at, &x, &y);
+        d_circle(x, y, 7 * DK, K_BG2, LV_OPA_COVER);
+        d_circle(x, y, 5 * DK, 0xFFFFFF, LV_OPA_COVER);
     }
     // ребристая ручка
-    d_circle(D_CX, D_CY + 5, 80, 0x000000, 70);
+    d_circle(D_CX, DCY + 5 * DK, 80 * DK, 0x000000, 70);
     for (int i = 0; i < 48; i++) {
         float a = i * 7.5f, x1, y1, x2, y2;
         dpt(66, a, &x1, &y1);
         dpt(72, a, &x2, &y2);
-        d_line(x1, y1, x2, y2, 5, 0x3C3D42, LV_OPA_COVER);
+        d_line(x1, y1, x2, y2, 5 * DK, 0x3C3D42, LV_OPA_COVER);
     }
     lv_draw_rect_dsc_t kd;
     lv_draw_rect_dsc_init(&kd);
@@ -828,29 +834,32 @@ static void draw_dial(pad_t *p)
     kd.bg_grad.stops[1].color = lv_color_hex(0x2A2B2F);
     kd.bg_grad.stops[1].opa = LV_OPA_COVER;
     kd.bg_grad.stops[1].frac = 255;
-    lv_area_t ka = {(int)D_CX - 67, (int)D_CY - 67, (int)D_CX + 67, (int)D_CY + 67};
+    int kr = (int)lroundf(67 * DK);
+    lv_area_t ka = {(int)D_CX - kr, (int)DCY - kr, (int)D_CX + kr, (int)DCY + kr};
     lv_draw_rect(L, &kd, &ka);
     if (p->has_target) {
         float x1, y1, x2, y2;
         dpt(54, at, &x1, &y1);
         dpt(62, at, &x2, &y2);
-        d_line(x1, y1, x2, y2, 4, on ? fill : K_DIM, LV_OPA_COVER);
+        d_line(x1, y1, x2, y2, 4 * DK, on ? fill : K_DIM, LV_OPA_COVER);
     }
     if (p->has_target) snprintf(b, sizeof(b), "%.*f", p->digits ? p->digits : 1, p->v_target);
     else snprintf(b, sizeof(b), "--");
-    d_num_deg(F46, F46, on ? K_INK : K_DIM, D_CX, D_CY + 14, 0, b, "°");
+    const lv_font_t *fn = big ? F60 : F46;
+    d_num_deg(fn, fn, on ? K_INK : K_DIM, D_CX, DCY + 14 * DK + (big ? 3 : 0), 0, b, "°");
     if (p->has_current) {
         snprintf(b, sizeof(b), "сейчас %.1f°", p->v_current);
-        d_text(F12, K_DIM, LV_OPA_COVER, D_CX, D_CY + 38, 1, b);
+        d_text(big ? f14 : F12, K_DIM, LV_OPA_COVER, D_CX, DCY + 38 * DK, 1, b);
     }
     // - и +
     for (int k = 0; k < 2; k++) {
-        float x = k ? 312 : 168, y = 312;
+        float x = D_CX + (k ? 72 : -72) * DK, y = DCY + 87 * DK;
         int z = k ? Z_PLUS : Z_MINUS;
-        d_circle(x, y, 24, pressed(z, 0) ? 0x55565C : 0x3A3B40, LV_OPA_COVER);
-        d_line(x - 8, y, x + 8, y, 3, K_INK, LV_OPA_COVER);
-        if (k) d_line(x, y - 8, x, y + 8, 3, K_INK, LV_OPA_COVER);
-        zone((int)x - 36, 276, (int)x + 36, 348, z, 0);
+        float r = 24 * DK, g = 8 * DK;
+        d_circle(x, y, r, pressed(z, 0) ? 0x55565C : 0x3A3B40, LV_OPA_COVER);
+        d_line(x - g, y, x + g, y, 3 * DK, K_INK, LV_OPA_COVER);
+        if (k) d_line(x, y - g, x, y + g, 3 * DK, K_INK, LV_OPA_COVER);
+        zone((int)(x - r - 12), (int)(y - r - 12), (int)(x + r + 12), (int)(y + r + 12), z, 0);
     }
     // состояние
     const char *status = "";
@@ -862,7 +871,8 @@ static void draw_dial(pad_t *p)
         const opt_t *m = find_opt(p->modes, p->nmodes, p->mode_now);
         if (m) status = m->t;
     }
-    d_text(F17, !on ? K_DIM : cool ? K_DCOOL : live ? K_HEAT : K_DIM, LV_OPA_COVER, 240, 358, 1, status);
+    d_text(big ? F22S : F17, !on ? K_DIM : cool ? K_DCOOL : live ? K_HEAT : K_DIM, LV_OPA_COVER, 240,
+           DCY + 133 * DK + (big ? 4 : 0), 1, status);
 
     // фанкойл: режим и скорость
     int nb = (p->nmodes ? 1 : 0) + (p->nfans ? 1 : 0), k = 0;
@@ -889,10 +899,10 @@ static void draw_dial(pad_t *p)
 }
 
 // ---- штора: окно с небом, как плитка панели
-#define SC_X 50
-#define SC_Y 107
-#define SC_W 380
-#define SC_H 261
+#define SC_X 16
+#define SC_Y 80
+#define SC_W 448
+#define SC_H 320
 
 static float shown_pos(const pad_t *p) { return p->has_pos ? clampf(p->v_pos, 0, 100) : 0; }
 
@@ -900,9 +910,6 @@ static void draw_cover(pad_t *p)
 {
     float open = shown_pos(p) / 100.0f;
     d_rect(0, 0, 480, 480, 0, K_BG2, LV_OPA_COVER);
-    // рама: светлая, тёмный переплёт, сцена
-    d_rect(18, 76, 444, 324, 26, 0xEDEDF0, LV_OPA_COVER);
-    d_rect(30, 88, 420, 300, 16, K_SASH, LV_OPA_COVER);
 
     lv_area_t clip_old = L->_clip_area, sc = {SC_X, SC_Y, SC_X + SC_W - 1, SC_Y + SC_H - 1};
     lv_area_t cl;
@@ -949,8 +956,8 @@ static void draw_cover(pad_t *p)
         d_vgrad(SC_X, SC_Y + (int)(SC_H * 0.55f), SC_W, (int)(SC_H * 0.45f) + 1, 0, K_BG, LV_OPA_TRANSP, K_BG, 200);
         L->_clip_area = clip_old;
     }
-    // скругление сцены: тёмная рамка поверх углов
-    d_border(SC_X - 14, SC_Y - 14, SC_W + 28, SC_H + 28, 32, 14, K_SASH, LV_OPA_COVER);
+    // скругление сцены: кольцо цвета фона поверх углов
+    d_border(SC_X - 14, SC_Y - 14, SC_W + 28, SC_H + 28, 32, 14, K_BG2, LV_OPA_COVER);
     d_border(SC_X, SC_Y, SC_W, SC_H, 18, 2, open > 0.01f ? K_ACTIVE : 0x3A3B40, LV_OPA_COVER);
     zone(SC_X - 20, SC_Y - 20, SC_X + SC_W + 20, SC_Y + SC_H + 20, Z_SCENE, 0);
 
@@ -1097,7 +1104,7 @@ static int zone_at(lv_point_t pt)
 
 static float dial_value(const pad_t *p, lv_point_t pt)
 {
-    float ang = atan2f(pt.y - D_CY, pt.x - D_CX) * 180 / (float)M_PI;
+    float ang = atan2f(pt.y - DCY, pt.x - D_CX) * 180 / (float)M_PI;
     float rel = fmodf(ang - D_A0 + 720, 360);
     if (rel > D_SW) rel = rel > (D_SW + 360) / 2 ? 0 : D_SW;
     return snap(p, p->min + rel / D_SW * (p->max - p->min));

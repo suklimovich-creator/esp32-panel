@@ -15,7 +15,6 @@
 #include "app.h"
 #include "ui_priv.h"
 
-#define DIM_AFTER_MS 60000
 
 extern const uint8_t inter_regular_start[] asm("_binary_inter_regular_ttf_start");
 extern const uint8_t inter_regular_end[] asm("_binary_inter_regular_ttf_end");
@@ -31,7 +30,6 @@ static lv_obj_t *lbl_clock, *lbl_wifi;
 static lv_obj_t *lbl_dev_info, *lbl_bright;
 static lv_obj_t *lbl_setup_ap, *lbl_setup_pass, *qr, *btn_setup_back;
 static lv_obj_t *ota_box, *ota_bar, *ota_lbl, *ota_pct;
-static bool s_dimmed;
 
 // ------------------------------------------------------------ helpers
 static lv_font_t *ttf(const uint8_t *s, const uint8_t *e, int px)
@@ -202,7 +200,6 @@ static void bright_changed(lv_event_t *e)
     int v = lv_slider_get_value(s);
     lv_label_set_text_fmt(lbl_bright, "Яркость  %d%%", v);
     g_cfg.bright = v;
-    s_dimmed = false;
     lcd_backlight(v);
     if (lv_event_get_code(e) == LV_EVENT_RELEASED) settings_save();
 }
@@ -383,7 +380,6 @@ void ui_ota_progress(int percent, const char *text)
         lv_bar_set_value(ota_bar, percent, LV_ANIM_OFF);
         lv_label_set_text_fmt(ota_pct, "%d%%", percent);
         lcd_backlight(g_cfg.bright);
-        s_dimmed = false;
     }
     ui_unlock();
 }
@@ -407,16 +403,8 @@ static void refresh(lv_timer_t *t)
 
     if (lv_screen_active() == scr_dev) fill_device(&ns);
 
-    // Приглушить подсветку, если к экрану долго не прикасались.
-    uint32_t idle = lv_display_get_inactive_time(NULL);
-    if (!s_dimmed && idle > DIM_AFTER_MS && !ota_busy()) {
-        int low = g_cfg.bright / 4;
-        lcd_backlight(low < 5 ? 5 : low);
-        s_dimmed = true;
-    } else if (s_dimmed && idle < 1500) {
-        lcd_backlight(g_cfg.bright);
-        s_dimmed = false;
-    }
+    // Приглушение при бездействии убрано (0.5.1): на стене экран нужен
+    // читаемым всегда. Яркость - ползунком на экране «Устройство».
 }
 
 void ui_net_changed(void)

@@ -86,7 +86,7 @@ bool mq_connected(void);
 void mq_publish(const char *topic, const char *payload);
 
 // ---------------------------------------------------------------- tiles
-void tiles_build(void *tileview, const char *json);   // под ui_lock
+void tiles_build(void *content, void *tabbar, const char *json);   // под ui_lock
 int tiles_count(void);
 void tiles_for_each_topic(void (*cb)(const char *topic, void *ctx), void *ctx);
 void tiles_on_value(const char *topic, const char *value);   // из задачи MQTT

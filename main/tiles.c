@@ -5,10 +5,12 @@
 //   dimmer  - яркость:      level, [state], [temp], [max], [temp_min], [temp_max]
 //   scene   - нажатие:      cmd, [payload]
 //   sensor  - значение:     value, [unit], [digits]
+// У всех: title, w - ширина в колонках 1-3 (диммер по умолчанию 3, остальные 1).
 // Команда по умолчанию - тот же топик с "/on" на конце (правило Wiren Board).
 #include <string.h>
 #include <stdlib.h>
 #include <stdio.h>
+#include <stdint.h>
 #include "esp_log.h"
 #include "cJSON.h"
 #include "app.h"
@@ -16,8 +18,10 @@
 
 static const char *TAG = "tiles";
 
-#define HALF_W 218
-#define FULL_W 448
+// Сетка 3 колонки: 12 + 3*146 + 2*8 + 12 = 480.
+#define COL_W 146
+#define GAP 8
+#define MAX_PAGES 12
 #define PUB_EVERY_MS 150        // не чаще при перетаскивании ползунка
 #define ECHO_IGNORE_MS 1500     // после касания не дёргать ползунок эхом брокера
 
@@ -27,7 +31,7 @@ typedef struct {
     ttype_t type;
     char *title, *state, *state_cmd, *level, *level_cmd, *temp, *temp_cmd;
     char *value, *cmd, *payload, *unit;
-    int digits, max, temp_min, temp_max;
+    int digits, max, temp_min, temp_max, w;
     bool on;
     int lvl, tmp;
     lv_obj_t *card, *lbl_title, *lbl_state, *lbl_value, *lbl_unit, *sl_level, *sl_temp;
@@ -36,6 +40,8 @@ typedef struct {
 
 static tile_t *s_tiles;
 static int s_count;
+static lv_obj_t *s_pages[MAX_PAGES], *s_tabs[MAX_PAGES];
+static int s_npages;
 
 int tiles_count(void) { return s_count; }
 
@@ -79,10 +85,10 @@ static lv_obj_t *card(lv_obj_t *parent, int w, int h)
     lv_obj_set_size(c, w, h);
     lv_obj_set_style_bg_color(c, lv_color_hex(C_CARD), 0);
     lv_obj_set_style_bg_opa(c, LV_OPA_COVER, 0);
-    lv_obj_set_style_radius(c, 20, 0);
+    lv_obj_set_style_radius(c, 16, 0);
     lv_obj_set_style_border_width(c, 1, 0);
     lv_obj_set_style_border_color(c, lv_color_hex(C_LINE), 0);
-    lv_obj_set_style_pad_all(c, 16, 0);
+    lv_obj_set_style_pad_all(c, 12, 0);
     lv_obj_set_style_shadow_width(c, 0, 0);
     lv_obj_remove_flag(c, LV_OBJ_FLAG_SCROLLABLE);
     return c;
@@ -204,11 +210,17 @@ static void scene_cb(lv_event_t *e)
 }
 
 // ------------------------------------------------------------ build
+static int tile_w(const tile_t *t)
+{
+    return t->w * COL_W + (t->w - 1) * GAP;
+}
+
 static void build_tile(lv_obj_t *page, tile_t *t)
 {
+    int w = tile_w(t);
     switch (t->type) {
     case T_SWITCH:
-        t->card = card(page, HALF_W, 112);
+        t->card = card(page, w, 84);
         lv_obj_add_flag(t->card, LV_OBJ_FLAG_CLICKABLE);
         t->lbl_title = ui_label(t->card, f18, C_TEXT, t->title);
         t->lbl_state = ui_label(t->card, f14, C_DIM, "—");
@@ -218,30 +230,31 @@ static void build_tile(lv_obj_t *page, tile_t *t)
         break;
 
     case T_DIMMER: {
-        t->card = card(page, FULL_W, t->temp ? 196 : 136);
+        t->card = card(page, w, t->temp ? 130 : 98);
         // Шапка: нажатие включает и выключает, ползунок задаёт яркость.
         lv_obj_t *head = lv_obj_create(t->card);
-        lv_obj_set_size(head, LV_PCT(100), 44);
+        lv_obj_set_size(head, LV_PCT(100), 26);
         lv_obj_set_style_bg_opa(head, LV_OPA_TRANSP, 0);
         lv_obj_set_style_border_width(head, 0, 0);
         lv_obj_set_style_pad_all(head, 0, 0);
         lv_obj_remove_flag(head, LV_OBJ_FLAG_SCROLLABLE);
         lv_obj_add_flag(head, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_set_ext_click_area(head, 8);
         t->lbl_title = ui_label(head, f18, C_TEXT, t->title);
         lv_obj_align(t->lbl_title, LV_ALIGN_LEFT_MID, 0, 0);
         t->lbl_state = ui_label(head, f18, C_DIM, "—");
         lv_obj_align(t->lbl_state, LV_ALIGN_RIGHT_MID, 0, 0);
         lv_obj_add_event_cb(head, toggle_cb, LV_EVENT_CLICKED, t);
 
-        t->sl_level = flat_slider(t->card, FULL_W - 34, 48, 0, t->max);
-        lv_obj_align(t->sl_level, LV_ALIGN_TOP_MID, 0, 52);
+        t->sl_level = flat_slider(t->card, w - 26, 38, 0, t->max);
+        lv_obj_align(t->sl_level, LV_ALIGN_TOP_MID, 0, 34);
         lv_obj_add_event_cb(t->sl_level, level_cb, LV_EVENT_VALUE_CHANGED, t);
         lv_obj_add_event_cb(t->sl_level, level_cb, LV_EVENT_RELEASED, t);
 
         if (t->temp) {
             // Цветовая температура: вся дорожка - градиент, видна только ручка.
-            t->sl_temp = flat_slider(t->card, FULL_W - 34, 28, t->temp_min, t->temp_max);
-            lv_obj_align(t->sl_temp, LV_ALIGN_TOP_MID, 0, 124);
+            t->sl_temp = flat_slider(t->card, w - 26, 20, t->temp_min, t->temp_max);
+            lv_obj_align(t->sl_temp, LV_ALIGN_TOP_MID, 0, 84);
             lv_obj_set_style_bg_color(t->sl_temp, lv_color_hex(0xFFB15C), LV_PART_MAIN);
             lv_obj_set_style_bg_grad_color(t->sl_temp, lv_color_hex(0xCFE6FF), LV_PART_MAIN);
             lv_obj_set_style_bg_grad_dir(t->sl_temp, LV_GRAD_DIR_HOR, LV_PART_MAIN);
@@ -249,8 +262,8 @@ static void build_tile(lv_obj_t *page, tile_t *t)
             lv_obj_set_style_bg_color(t->sl_temp, lv_color_hex(0xFFFFFF), LV_PART_KNOB);
             lv_obj_set_style_bg_opa(t->sl_temp, LV_OPA_COVER, LV_PART_KNOB);
             lv_obj_set_style_border_color(t->sl_temp, lv_color_hex(C_BG), LV_PART_KNOB);
-            lv_obj_set_style_border_width(t->sl_temp, 3, LV_PART_KNOB);
-            lv_obj_set_style_pad_all(t->sl_temp, 4, LV_PART_KNOB);
+            lv_obj_set_style_border_width(t->sl_temp, 2, LV_PART_KNOB);
+            lv_obj_set_style_pad_all(t->sl_temp, 3, LV_PART_KNOB);
             lv_obj_add_event_cb(t->sl_temp, temp_cb, LV_EVENT_VALUE_CHANGED, t);
             lv_obj_add_event_cb(t->sl_temp, temp_cb, LV_EVENT_RELEASED, t);
         }
@@ -259,7 +272,7 @@ static void build_tile(lv_obj_t *page, tile_t *t)
     }
 
     case T_SCENE:
-        t->card = card(page, HALF_W, 84);
+        t->card = card(page, w, 62);
         lv_obj_add_flag(t->card, LV_OBJ_FLAG_CLICKABLE);
         t->lbl_title = ui_label(t->card, f18, C_TEXT, t->title);
         lv_obj_align(t->lbl_title, LV_ALIGN_LEFT_MID, 0, 0);
@@ -267,25 +280,25 @@ static void build_tile(lv_obj_t *page, tile_t *t)
         break;
 
     case T_SENSOR:
-        t->card = card(page, HALF_W, 112);
+        t->card = card(page, w, 84);
         t->lbl_title = ui_label(t->card, f14, C_DIM, t->title);
         t->lbl_value = ui_label(t->card, f28b, C_TEXT, "—");
-        lv_obj_align(t->lbl_value, LV_ALIGN_BOTTOM_LEFT, 0, 0);
+        lv_obj_align(t->lbl_value, LV_ALIGN_BOTTOM_LEFT, 0, 4);
         if (t->unit) {
-            t->lbl_unit = ui_label(t->card, f18, C_DIM, t->unit);
-            lv_obj_align_to(t->lbl_unit, t->lbl_value, LV_ALIGN_OUT_RIGHT_TOP, 4, 4);
+            t->lbl_unit = ui_label(t->card, f14, C_DIM, t->unit);
+            lv_obj_align_to(t->lbl_unit, t->lbl_value, LV_ALIGN_OUT_RIGHT_TOP, 3, 3);
         }
         break;
 
     default: {
-        t->card = card(page, HALF_W, 84);
+        t->card = card(page, w, 62);
         lv_obj_t *l = ui_label(t->card, f14, C_DIM, "");
-        lv_label_set_text_fmt(l, "%s\nтип пока не поддерживается", t->title ? t->title : "");
+        lv_label_set_text_fmt(l, "%s\nтип не поддерживается", t->title ? t->title : "");
         break;
     }
     }
     if (t->lbl_title) {
-        lv_obj_set_width(t->lbl_title, t->type == T_DIMMER ? 280 : HALF_W - 34);
+        lv_obj_set_width(t->lbl_title, t->type == T_DIMMER ? w - 110 : w - 24);
         lv_label_set_long_mode(t->lbl_title, LV_LABEL_LONG_DOT);
     }
 }
@@ -309,6 +322,10 @@ static void parse_tile(tile_t *t, const cJSON *o)
     t->max = jint(o, "max", 100);
     t->temp_min = jint(o, "temp_min", 0);
     t->temp_max = jint(o, "temp_max", 100);
+    // Ширина в колонках (1-3). Диммер по умолчанию на всю ширину.
+    t->w = jint(o, "w", t->type == T_DIMMER ? 3 : 1);
+    if (t->w < 1) t->w = 1;
+    if (t->w > 3) t->w = 3;
     if (t->type == T_SWITCH) {
         t->state_cmd = cmd_of(t->state, t->cmd);
     } else {
@@ -320,21 +337,64 @@ static void parse_tile(tile_t *t, const cJSON *o)
     if (t->type == T_SCENE && !t->cmd) t->type = T_UNKNOWN;
 }
 
-static void add_page_title(lv_obj_t *page, const char *title)
+// Вкладки: страница видна одна, переключение - нажатием на вкладку.
+static void show_page(int idx)
 {
-    lv_obj_t *l = ui_label(page, f22, C_TEXT, title ? title : "");
-    lv_obj_set_width(l, FULL_W);
+    for (int i = 0; i < s_npages; i++) {
+        bool on = i == idx;
+        if (on) lv_obj_remove_flag(s_pages[i], LV_OBJ_FLAG_HIDDEN);
+        else lv_obj_add_flag(s_pages[i], LV_OBJ_FLAG_HIDDEN);
+        lv_obj_set_style_bg_opa(s_tabs[i], on ? LV_OPA_COVER : LV_OPA_TRANSP, 0);
+        lv_obj_set_style_text_color(lv_obj_get_child(s_tabs[i], 0), lv_color_hex(on ? C_TEXT : C_DIM), 0);
+    }
+    lv_obj_scroll_to_view(s_tabs[idx], LV_ANIM_ON);
 }
 
-void tiles_build(void *tileview, const char *json)
+static void tab_cb(lv_event_t *e)
 {
-    lv_obj_t *tv = tileview;
+    show_page((int)(intptr_t)lv_event_get_user_data(e));
+}
+
+static lv_obj_t *new_page(lv_obj_t *content)
+{
+    lv_obj_t *page = lv_obj_create(content);
+    lv_obj_set_size(page, LV_PCT(100), LV_PCT(100));
+    lv_obj_set_style_bg_opa(page, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(page, 0, 0);
+    lv_obj_set_style_radius(page, 0, 0);
+    lv_obj_set_flex_flow(page, LV_FLEX_FLOW_ROW_WRAP);
+    lv_obj_set_style_pad_hor(page, 12, 0);
+    lv_obj_set_style_pad_top(page, 4, 0);
+    lv_obj_set_style_pad_bottom(page, 16, 0);
+    lv_obj_set_style_pad_gap(page, GAP, 0);
+    lv_obj_set_scrollbar_mode(page, LV_SCROLLBAR_MODE_OFF);
+    lv_obj_set_scroll_dir(page, LV_DIR_VER);
+    return page;
+}
+
+static lv_obj_t *new_tab(lv_obj_t *tabbar, const char *title, int idx)
+{
+    lv_obj_t *b = lv_button_create(tabbar);
+    lv_obj_set_height(b, 36);
+    lv_obj_set_style_pad_hor(b, 14, 0);
+    lv_obj_set_style_pad_ver(b, 0, 0);
+    lv_obj_set_style_radius(b, 18, 0);
+    lv_obj_set_style_shadow_width(b, 0, 0);
+    lv_obj_set_style_bg_color(b, lv_color_hex(C_CARD_ON), 0);
+    lv_obj_set_style_bg_opa(b, LV_OPA_TRANSP, 0);
+    lv_obj_t *l = ui_label(b, f18, C_DIM, title ? title : "…");
+    lv_obj_center(l);
+    lv_obj_add_event_cb(b, tab_cb, LV_EVENT_CLICKED, (void *)(intptr_t)idx);
+    return b;
+}
+
+void tiles_build(void *content_obj, void *tabbar_obj, const char *json)
+{
+    lv_obj_t *content = content_obj, *tabbar = tabbar_obj;
     cJSON *root = cJSON_Parse(json);
     const cJSON *pages = cJSON_GetObjectItem(root, "pages");
-    int npages = cJSON_GetArraySize(pages);
-    if (!cJSON_IsArray(pages) || npages == 0) {
-        lv_obj_t *p = lv_tileview_add_tile(tv, 0, 0, LV_DIR_NONE);
-        lv_obj_t *l = ui_label(p, f18, C_DIM, "Раскладка пустая или с ошибкой.\nЗагрузите JSON на веб-странице экрана.");
+    if (!cJSON_IsArray(pages) || cJSON_GetArraySize(pages) == 0) {
+        lv_obj_t *l = ui_label(content, f18, C_DIM, "Раскладка пустая или с ошибкой.\nЗагрузите JSON на веб-странице экрана.");
         lv_obj_center(l);
         ESP_LOGE(TAG, "в раскладке нет страниц");
         cJSON_Delete(root);
@@ -346,32 +406,24 @@ void tiles_build(void *tileview, const char *json)
     cJSON_ArrayForEach(pg, pages) total += cJSON_GetArraySize(cJSON_GetObjectItem(pg, "tiles"));
     s_tiles = calloc(total ? total : 1, sizeof(tile_t));
     s_count = 0;
+    s_npages = 0;
 
-    int i = 0;
     cJSON_ArrayForEach(pg, pages) {
-        lv_dir_t dir = (i > 0 ? LV_DIR_LEFT : 0) | (i < npages - 1 ? LV_DIR_RIGHT : 0);
-        lv_obj_t *page = lv_tileview_add_tile(tv, i, 0, dir);
-        lv_obj_set_flex_flow(page, LV_FLEX_FLOW_ROW_WRAP);
-        lv_obj_set_style_pad_hor(page, 16, 0);
-        lv_obj_set_style_pad_top(page, 4, 0);
-        lv_obj_set_style_pad_bottom(page, 20, 0);
-        lv_obj_set_style_pad_gap(page, 12, 0);
-        lv_obj_set_scrollbar_mode(page, LV_SCROLLBAR_MODE_OFF);
-        lv_obj_set_scroll_dir(page, LV_DIR_VER);
-
+        if (s_npages >= MAX_PAGES) break;
         const cJSON *pt = cJSON_GetObjectItem(pg, "title");
-        add_page_title(page, cJSON_IsString(pt) ? pt->valuestring : NULL);
-
+        int idx = s_npages++;
+        s_pages[idx] = new_page(content);
+        s_tabs[idx] = new_tab(tabbar, cJSON_IsString(pt) ? pt->valuestring : NULL, idx);
         const cJSON *o;
         cJSON_ArrayForEach(o, cJSON_GetObjectItem(pg, "tiles")) {
             tile_t *t = &s_tiles[s_count++];
             parse_tile(t, o);
-            build_tile(page, t);
+            build_tile(s_pages[idx], t);
         }
-        i++;
     }
     cJSON_Delete(root);
-    ESP_LOGI(TAG, "страниц: %d, плиток: %d", npages, s_count);
+    show_page(0);
+    ESP_LOGI(TAG, "страниц: %d, плиток: %d", s_npages, s_count);
 }
 
 void tiles_for_each_topic(void (*cb)(const char *topic, void *ctx), void *ctx)

@@ -27,7 +27,7 @@ extern const uint8_t inter_semibold_end[] asm("_binary_inter_semibold_ttf_end");
 lv_font_t *f14, *f18, *f22, *f28b, *f80l;
 
 static lv_obj_t *scr_main, *scr_dev, *scr_setup;
-static lv_obj_t *lbl_clock, *lbl_date, *lbl_wifi;
+static lv_obj_t *lbl_clock, *lbl_wifi;
 static lv_obj_t *lbl_dev_info, *lbl_bright;
 static lv_obj_t *lbl_setup_ap, *lbl_setup_pass, *qr, *btn_setup_back;
 static lv_obj_t *ota_box, *ota_bar, *ota_lbl, *ota_pct;
@@ -95,32 +95,46 @@ static void build_main(void)
 {
     scr_main = screen();
 
-    lbl_clock = ui_label(scr_main, f28b, C_TEXT, "--:--");
-    lv_obj_set_pos(lbl_clock, 24, 14);
-    lbl_date = ui_label(scr_main, f14, C_DIM, "");
-    lv_obj_set_pos(lbl_date, 24, 52);
-
-    lbl_wifi = ui_label(scr_main, &lv_font_montserrat_20, C_DIM, LV_SYMBOL_WIFI);
-    lv_obj_align(lbl_wifi, LV_ALIGN_TOP_RIGHT, -76, 28);
+    // Шапка в одну строку: вкладки слева, часы, связь и шестерёнка справа.
+    lv_obj_t *tabbar = lv_obj_create(scr_main);
+    lv_obj_set_size(tabbar, 330, 44);
+    lv_obj_set_pos(tabbar, 8, 6);
+    lv_obj_set_style_bg_opa(tabbar, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(tabbar, 0, 0);
+    lv_obj_set_style_pad_all(tabbar, 4, 0);
+    lv_obj_set_style_pad_column(tabbar, 4, 0);
+    lv_obj_set_flex_flow(tabbar, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(tabbar, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_scroll_dir(tabbar, LV_DIR_HOR);
+    lv_obj_set_scrollbar_mode(tabbar, LV_SCROLLBAR_MODE_OFF);
 
     lv_obj_t *gear = lv_button_create(scr_main);
-    lv_obj_set_size(gear, 52, 52);
-    lv_obj_align(gear, LV_ALIGN_TOP_RIGHT, -14, 14);
+    lv_obj_set_size(gear, 36, 36);
+    lv_obj_align(gear, LV_ALIGN_TOP_RIGHT, -10, 10);
     lv_obj_set_style_bg_color(gear, lv_color_hex(C_CARD), 0);
     lv_obj_set_style_radius(gear, LV_RADIUS_CIRCLE, 0);
     lv_obj_set_style_shadow_width(gear, 0, 0);
-    lv_obj_t *gl = ui_label(gear, &lv_font_montserrat_20, C_DIM, LV_SYMBOL_SETTINGS);
+    lv_obj_set_ext_click_area(gear, 10);
+    lv_obj_t *gl = ui_label(gear, &lv_font_montserrat_14, C_DIM, LV_SYMBOL_SETTINGS);
     lv_obj_center(gl);
     lv_obj_add_event_cb(gear, open_device, LV_EVENT_CLICKED, NULL);
 
-    // Страницы плиток листаются влево-вправо, длинная страница - вверх-вниз.
-    lv_obj_t *tv = lv_tileview_create(scr_main);
-    lv_obj_set_size(tv, 480, 396);
-    lv_obj_set_pos(tv, 0, 84);
-    lv_obj_set_style_bg_opa(tv, LV_OPA_TRANSP, 0);
-    lv_obj_set_scrollbar_mode(tv, LV_SCROLLBAR_MODE_OFF);
+    lbl_wifi = ui_label(scr_main, &lv_font_montserrat_14, C_DIM, LV_SYMBOL_WIFI);
+    lv_obj_align(lbl_wifi, LV_ALIGN_TOP_RIGHT, -56, 20);
+    lbl_clock = ui_label(scr_main, f22, C_TEXT, "--:--");
+    lv_obj_align(lbl_clock, LV_ALIGN_TOP_RIGHT, -78, 15);
+
+    lv_obj_t *content = lv_obj_create(scr_main);
+    lv_obj_set_size(content, 480, 424);
+    lv_obj_set_pos(content, 0, 56);
+    lv_obj_set_style_bg_opa(content, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(content, 0, 0);
+    lv_obj_set_style_radius(content, 0, 0);
+    lv_obj_set_style_pad_all(content, 0, 0);
+    lv_obj_remove_flag(content, LV_OBJ_FLAG_SCROLLABLE);
+
     char *json = layout_get(&s_layout_custom);
-    tiles_build(tv, json);
+    tiles_build(content, tabbar, json);
     free(json);
 }
 
@@ -194,30 +208,40 @@ static void bright_changed(lv_event_t *e)
 static void build_device(void)
 {
     scr_dev = screen();
+    // Столбец с прокруткой: длинный текст не наезжает на ползунок и кнопки.
+    lv_obj_add_flag(scr_dev, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_scroll_dir(scr_dev, LV_DIR_VER);
+    lv_obj_set_flex_flow(scr_dev, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_all(scr_dev, 14, 0);
+    lv_obj_set_style_pad_row(scr_dev, 12, 0);
 
-    lv_obj_t *back = button(scr_dev, "←  Назад", C_CARD, C_TEXT, back_main);
-    lv_obj_set_pos(back, 16, 14);
-    lv_obj_t *title = ui_label(scr_dev, f22, C_TEXT, "Устройство");
-    lv_obj_align(title, LV_ALIGN_TOP_RIGHT, -24, 28);
+    lv_obj_t *top = lv_obj_create(scr_dev);
+    lv_obj_set_size(top, LV_PCT(100), 46);
+    lv_obj_set_style_bg_opa(top, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(top, 0, 0);
+    lv_obj_set_style_pad_all(top, 0, 0);
+    lv_obj_remove_flag(top, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_t *back = button(top, "←  Назад", C_CARD, C_TEXT, back_main);
+    lv_obj_set_style_pad_ver(back, 10, 0);
+    lv_obj_align(back, LV_ALIGN_LEFT_MID, 0, 0);
+    lv_obj_t *title = ui_label(top, f22, C_TEXT, "Устройство");
+    lv_obj_align(title, LV_ALIGN_RIGHT_MID, -6, 0);
 
     lbl_dev_info = ui_label(scr_dev, f14, C_DIM, "");
-    lv_obj_set_width(lbl_dev_info, 432);
-    lv_obj_set_pos(lbl_dev_info, 24, 80);
-    lv_obj_set_style_text_line_space(lbl_dev_info, 4, 0);
+    lv_obj_set_width(lbl_dev_info, LV_PCT(100));
+    lv_obj_set_style_text_line_space(lbl_dev_info, 3, 0);
     lv_label_set_long_mode(lbl_dev_info, LV_LABEL_LONG_WRAP);
 
     lbl_bright = ui_label(scr_dev, f14, C_DIM, "Яркость");
-    lv_obj_set_pos(lbl_bright, 24, 272);
     lv_obj_t *bs = lv_slider_create(scr_dev);
-    lv_obj_set_size(bs, 432, 30);
-    lv_obj_set_pos(bs, 24, 298);
+    lv_obj_set_size(bs, LV_PCT(100), 28);
     lv_slider_set_range(bs, 5, 100);
     lv_slider_set_value(bs, g_cfg.bright, LV_ANIM_OFF);
     lv_label_set_text_fmt(lbl_bright, "Яркость  %d%%", g_cfg.bright);
-    lv_obj_set_style_radius(bs, 15, LV_PART_MAIN);
+    lv_obj_set_style_radius(bs, 14, LV_PART_MAIN);
     lv_obj_set_style_bg_color(bs, lv_color_hex(C_CARD), LV_PART_MAIN);
     lv_obj_set_style_bg_opa(bs, LV_OPA_COVER, LV_PART_MAIN);
-    lv_obj_set_style_radius(bs, 15, LV_PART_INDICATOR);
+    lv_obj_set_style_radius(bs, 14, LV_PART_INDICATOR);
     lv_obj_set_style_bg_color(bs, lv_color_hex(0xDADDE5), LV_PART_INDICATOR);
     lv_obj_set_style_bg_opa(bs, LV_OPA_TRANSP, LV_PART_KNOB);
     lv_obj_set_style_shadow_width(bs, 0, LV_PART_KNOB);
@@ -225,19 +249,18 @@ static void build_device(void)
     lv_obj_add_event_cb(bs, bright_changed, LV_EVENT_RELEASED, NULL);
 
     lv_obj_t *grid = lv_obj_create(scr_dev);
-    lv_obj_set_size(grid, 448, 136);
-    lv_obj_set_pos(grid, 16, 338);
+    lv_obj_set_size(grid, LV_PCT(100), LV_SIZE_CONTENT);
     lv_obj_set_style_bg_opa(grid, LV_OPA_TRANSP, 0);
     lv_obj_set_style_border_width(grid, 0, 0);
-    lv_obj_set_style_pad_all(grid, 8, 0);
-    lv_obj_set_style_pad_gap(grid, 10, 0);
+    lv_obj_set_style_pad_all(grid, 0, 0);
+    lv_obj_set_style_pad_gap(grid, 8, 0);
     lv_obj_set_flex_flow(grid, LV_FLEX_FLOW_ROW_WRAP);
     lv_obj_remove_flag(grid, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_t *b;
-    b = button(grid, "Обновление", C_CARD, C_TEXT, do_check);           lv_obj_set_width(b, 206);
-    b = button(grid, "Настройка Wi-Fi", C_CARD, C_TEXT, do_setup);      lv_obj_set_width(b, 206);
-    b = button(grid, "Перезагрузить", C_CARD, C_TEXT, do_reboot);       lv_obj_set_width(b, 206);
-    b = button(grid, "Забыть Wi-Fi", C_CARD, C_BAD, do_forget);         lv_obj_set_width(b, 206);
+    b = button(grid, "Обновление", C_CARD, C_TEXT, do_check);           lv_obj_set_width(b, 222);
+    b = button(grid, "Настройка Wi-Fi", C_CARD, C_TEXT, do_setup);      lv_obj_set_width(b, 222);
+    b = button(grid, "Перезагрузить", C_CARD, C_TEXT, do_reboot);       lv_obj_set_width(b, 222);
+    b = button(grid, "Забыть Wi-Fi", C_CARD, C_BAD, do_forget);         lv_obj_set_width(b, 222);
 }
 
 static void fill_device(const net_status_t *ns)
@@ -246,7 +269,7 @@ static void fill_device(const net_status_t *ns)
     char wifi[160], drops[160], ago[24];
     if (ns->sta_connected) {
         fmt_ago(ago, sizeof(ago), ns->online_s);
-        snprintf(wifi, sizeof(wifi), "%s, %d дБм, %s, в сети %s", g_cfg.ssid, ns->rssi, ns->ip, ago);
+        snprintf(wifi, sizeof(wifi), "%s, %d дБм, %s, %s", g_cfg.ssid, ns->rssi, ns->ip, ago);
     } else {
         snprintf(wifi, sizeof(wifi), "%s", ns->sta_configured ? "нет связи" : "не настроен");
     }
@@ -258,15 +281,15 @@ static void fill_device(const net_status_t *ns)
                  ns->disconnects, ago, net_reason_text(ns->last_reason));
     }
     lv_label_set_text_fmt(lbl_dev_info,
-        "Имя:  %s,  версия %s\nWi-Fi:  %s\nОбрывы Wi-Fi:  %s\nMQTT:  %s\nТочка доступа:  %s\n"
-        "Раскладка:  %s, плиток %d\nОбновление:  %s\nПамять:  %u КБ, минимум %u КБ",
+        "%s  ·  версия %s\nWi-Fi:  %s\nОбрывы:  %s\nMQTT:  %s  ·  точка доступа: %s\n"
+        "Раскладка:  %s, плиток %d\nПамять:  %u КБ, минимум %u КБ\nОбновление:  %s",
         g_cfg.name, ver, wifi, drops,
-        mq_connected() ? "подключён" : "нет связи с брокером",
-        ns->ap_active ? ns->ap_ssid : "выключена",
+        mq_connected() ? "подключён" : "нет связи",
+        ns->ap_active ? ns->ap_ssid : "выкл.",
         s_layout_custom ? "загруженная" : "встроенная", tiles_count(),
-        ota_state_text(),
         (unsigned)(heap_caps_get_free_size(MALLOC_CAP_INTERNAL) / 1024),
-        (unsigned)(heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL) / 1024));
+        (unsigned)(heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL) / 1024),
+        ota_state_text());
 }
 
 // ------------------------------------------------------------ setup screen
@@ -366,9 +389,6 @@ void ui_ota_progress(int percent, const char *text)
 // ------------------------------------------------------------ periodic
 static void refresh(lv_timer_t *t)
 {
-    static const char *wd[] = {"воскресенье", "понедельник", "вторник", "среда", "четверг", "пятница", "суббота"};
-    static const char *mn[] = {"января", "февраля", "марта", "апреля", "мая", "июня", "июля",
-                               "августа", "сентября", "октября", "ноября", "декабря"};
     net_status_t ns;
     net_get_status(&ns);
 
@@ -377,9 +397,6 @@ static void refresh(lv_timer_t *t)
         struct tm tm;
         localtime_r(&now, &tm);
         lv_label_set_text_fmt(lbl_clock, "%02d:%02d", tm.tm_hour, tm.tm_min);
-        lv_label_set_text_fmt(lbl_date, "%s, %d %s", wd[tm.tm_wday], tm.tm_mday, mn[tm.tm_mon]);
-    } else if (!ns.sta_connected) {
-        lv_label_set_text(lbl_date, ns.ap_active ? "нет Wi-Fi, точка доступа включена" : "подключение к Wi-Fi…");
     }
 
     // Значок связи: красный - нет Wi-Fi, жёлтый - нет брокера, белый - всё в порядке.
@@ -415,10 +432,10 @@ void ui_net_changed(void)
 
 void ui_init(void)
 {
-    f14 = ttf(inter_regular_start, inter_regular_end, 16);
-    f18 = ttf(inter_regular_start, inter_regular_end, 19);
-    f22 = ttf(inter_semibold_start, inter_semibold_end, 24);
-    f28b = ttf(inter_semibold_start, inter_semibold_end, 34);
+    f14 = ttf(inter_regular_start, inter_regular_end, 15);
+    f18 = ttf(inter_regular_start, inter_regular_end, 17);
+    f22 = ttf(inter_semibold_start, inter_semibold_end, 20);
+    f28b = ttf(inter_semibold_start, inter_semibold_end, 28);
     f80l = ttf(inter_light_start, inter_light_end, 84);
 
     lv_display_t *disp = lv_display_get_default();

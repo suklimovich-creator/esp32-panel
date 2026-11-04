@@ -3,6 +3,8 @@
 #include <string.h>
 #include <stdlib.h>
 #include "mqtt_client.h"
+#include "esp_event.h"
+#include "esp_netif.h"
 #include "esp_log.h"
 #include "app.h"
 
@@ -59,6 +61,17 @@ static void on_event(void *arg, esp_event_base_t base, int32_t id, void *data)
     }
 }
 
+// Клиент запускается, когда у экрана есть адрес: иначе первая попытка
+// заканчивается ошибкой в логе ("Host is unreachable").
+static void on_got_ip(void *arg, esp_event_base_t base, int32_t id, void *data)
+{
+    static bool started;
+    if (!started && s_client) {
+        started = true;
+        esp_mqtt_client_start(s_client);
+    }
+}
+
 void mq_start(void)
 {
     if (!g_cfg.mqtt[0] || tiles_count() == 0) {
@@ -79,5 +92,8 @@ void mq_start(void)
         return;
     }
     esp_mqtt_client_register_event(s_client, ESP_EVENT_ANY_ID, on_event, NULL);
-    esp_mqtt_client_start(s_client);
+    esp_event_handler_register(IP_EVENT, IP_EVENT_STA_GOT_IP, on_got_ip, NULL);
+    net_status_t ns;
+    net_get_status(&ns);
+    if (ns.sta_connected) on_got_ip(NULL, NULL, 0, NULL);
 }

@@ -180,27 +180,87 @@ bool chart_history_json(chart_t *c, const char *json)
     return true;
 }
 
-static void scale_of(const chart_series_t *s, float *lo, float *hi)
+typedef struct {
+    float lo, hi, step;
+    int divisions;
+} chart_scale_t;
+
+// Как geometry.py в wb-svg-panel: шаг 1, 2, 2.5, 5, 10 …
+static float nice_step(float lo, float hi)
 {
+    float span = fmaxf(hi - lo, 0.000000001f);
+    float raw = span / 4.0f;
+    float power = powf(10.0f, floorf(log10f(raw)));
+    const float mult[] = {1.0f, 2.0f, 2.5f, 5.0f, 10.0f};
+    for (size_t i = 0; i < sizeof(mult) / sizeof(mult[0]); i++)
+        if (raw <= power * mult[i]) return power * mult[i];
+    return power * 10.0f;
+}
+
+static chart_scale_t scale_of(const chart_series_t *s)
+{
+    chart_scale_t sc = {0};
     if (s->fixed_scale) {
-        *lo = s->min;
-        *hi = s->max;
-        return;
+        sc.lo = s->min;
+        sc.hi = s->max;
+        sc.step = nice_step(sc.lo, sc.hi);
+        sc.divisions = (int)lroundf((sc.hi - sc.lo) / sc.step);
+        if (sc.divisions < 1) sc.divisions = 1;
+        return sc;
     }
     if (!s->count) {
-        *lo = 0;
-        *hi = 1;
-        return;
+        sc.lo = 0;
+        sc.hi = sc.step = 1;
+        sc.divisions = 1;
+        return sc;
     }
-    *lo = *hi = s->values[0];
+    float lo = s->values[0], hi = lo;
     for (int i = 1; i < s->count; i++) {
-        if (s->values[i] < *lo) *lo = s->values[i];
-        if (s->values[i] > *hi) *hi = s->values[i];
+        if (s->values[i] < lo) lo = s->values[i];
+        if (s->values[i] > hi) hi = s->values[i];
     }
-    float pad = (*hi - *lo) * 0.08f;
-    if (pad <= 0) pad = fabsf(*hi) > 0.001f ? fabsf(*hi) * 0.05f : 0.5f;
-    *lo -= pad;
-    *hi += pad;
+    if (fabsf(hi - lo) < 0.0001f) {
+        float pad = fabsf(hi) > 0.001f ? fabsf(hi) * 0.05f : 0.5f;
+        lo -= pad;
+        hi += pad;
+    }
+    sc.step = nice_step(lo, hi);
+    sc.lo = floorf(lo / sc.step) * sc.step;
+    sc.hi = ceilf(hi / sc.step) * sc.step;
+    if (sc.hi - sc.lo < sc.step * 0.5f) sc.hi = sc.lo + sc.step;
+    sc.divisions = (int)lroundf((sc.hi - sc.lo) / sc.step);
+    if (sc.divisions < 1) sc.divisions = 1;
+    return sc;
+}
+
+// Общее число делений: горизонтальные линии всех шкал совпадают.
+static int chart_scales(const chart_t *c, chart_scale_t *scales)
+{
+    int divisions = 2;
+    for (int i = 0; i < c->nseries; i++) {
+        scales[i] = scale_of(&c->series[i]);
+        if (scales[i].divisions > divisions) divisions = scales[i].divisions;
+    }
+    if (divisions > 6) divisions = 6;
+    for (int i = 0; i < c->nseries; i++) {
+        chart_scale_t *sc = &scales[i];
+        if (c->series[i].fixed_scale) continue;
+        while (sc->divisions < divisions) {
+            sc->hi += sc->step;
+            sc->divisions++;
+            if (sc->divisions < divisions) {
+                sc->lo -= sc->step;
+                sc->divisions++;
+            }
+        }
+    }
+    return divisions;
+}
+
+static int scale_digits(float step)
+{
+    if (step >= 1.0f && fabsf(step - roundf(step)) < 0.000001f) return 0;
+    return step >= 0.1f ? 1 : 2;
 }
 
 static void value_text(const chart_series_t *s, char *buf, size_t size)
@@ -209,11 +269,11 @@ static void value_text(const chart_series_t *s, char *buf, size_t size)
     else snprintf(buf, size, "%.*f", s->digits, s->current);
 }
 
-static void draw_curve(const chart_series_t *s, int x, int y, int w, int h, bool dots)
+static void draw_curve(const chart_series_t *s, const chart_scale_t *scale,
+                       int x, int y, int w, int h, bool dots)
 {
     if (s->count < 2 || w < 2 || h < 2) return;
-    float lo, hi;
-    scale_of(s, &lo, &hi);
+    float lo = scale->lo, hi = scale->hi;
     double first = s->times[0], last = s->times[s->count - 1];
     double span = last > first ? last - first : 1;
     int px = x, py = y + h;
@@ -236,21 +296,33 @@ static void draw_curve(const chart_series_t *s, int x, int y, int w, int h, bool
     }
 }
 
+static void draw_time_grid(const chart_t *c, int x, int y, int w, int h, bool labels);
+
 void chart_draw_tile(const chart_t *c, int x, int y, int w, int h, bool pressed)
 {
     d_vgrad(x, y, w, h, 14, CHART_BG1, LV_OPA_COVER, CHART_BG2, LV_OPA_COVER);
     d_border(x, y, w, h, 14, 1, CHART_EDGE, LV_OPA_COVER);
     if (pressed) d_rect(x, y, w, h, 14, 0xFFFFFF, 18);
     d_text(F12, CHART_DIM, LV_OPA_COVER, x + 12, y + 18, 0, c->title);
-    const chart_series_t *first = &c->series[0];
-    char b[64];
-    value_text(first, b, sizeof(b));
-    d_text(F22S, first->color, LV_OPA_COVER, x + w - 12, y + 40, 2, b);
-    if (first->unit && first->has_current)
-        d_text(F12, CHART_DIM, LV_OPA_COVER, x + w - 12, y + 53, 2, first->unit);
 
-    int top = h >= 100 ? 62 : 30;
-    int bottom = h >= 100 ? 18 : 10;
+    // В шапке видны все текущие значения, а не только первая серия.
+    // Как в wb-svg-panel, цвет и необязательное имя связывают число с линией.
+    char b[64];
+    for (int i = 0; i < c->nseries; i++) {
+        const chart_series_t *s = &c->series[i];
+        char value[32];
+        value_text(s, value, sizeof(value));
+        const char *prefix = c->nseries > 1 && s->label && s->label[0] ? s->label : "";
+        snprintf(b, sizeof(b), "%s%s%s%s%s", prefix, prefix[0] ? " " : "", value,
+                 s->unit && s->unit[0] && s->has_current ? " " : "",
+                 s->unit && s->has_current ? s->unit : "");
+        d_text(i ? F17 : F22S, s->color, LV_OPA_COVER,
+               x + w - 12, y + 40 + i * 23, 2, b);
+    }
+
+    bool detailed = h >= 160;
+    int top = h >= 100 ? 62 + (c->nseries - 1) * 23 : 30;
+    int bottom = detailed ? 34 : 10;
     int px = x + 12, py = y + top, pw = w - 24, ph = h - top - bottom;
     if (ph < 18 || pw < 20) return;
     bool any = false;
@@ -259,11 +331,34 @@ void chart_draw_tile(const chart_t *c, int x, int y, int w, int h, bool pressed)
         d_text(F12, CHART_DIM, LV_OPA_COVER, px, py + 18, 0, "Нет истории");
         return;
     }
-    for (int i = 0; i <= 2; i++) {
-        int gy = py + i * (ph - 1) / 2;
-        d_line(px, gy, px + pw - 1, gy, 0.7f, CHART_GRID, 65);
+    chart_scale_t scales[CHART_MAX_SERIES];
+    int divisions = chart_scales(c, scales);
+    for (int i = 0; i <= divisions; i++) {
+        int gy = py + i * (ph - 1) / divisions;
+        d_line(px, gy, px + pw - 1, gy, i == divisions ? 1.0f : 0.7f,
+               CHART_GRID, i == divisions ? 110 : 65);
     }
-    for (int i = 0; i < c->nseries; i++) draw_curve(&c->series[i], px, py, pw, ph, false);
+    draw_time_grid(c, px, py, pw, ph, detailed);
+    for (int i = 0; i < c->nseries; i++)
+        draw_curve(&c->series[i], &scales[i], px, py, pw, ph, false);
+    if (!detailed) return;
+
+    // Подписи внутри краёв графика повторяют раскладку wb-svg-panel:
+    // температура слева, влажность (или вторая величина) справа.
+    for (int i = 0; i <= divisions; i++) {
+        int gy = py + i * (ph - 1) / divisions;
+        float f = 1.0f - (float)i / divisions;
+        if (c->series[0].count > 1) {
+            snprintf(b, sizeof(b), "%.*f", scale_digits(scales[0].step),
+                     scales[0].lo + (scales[0].hi - scales[0].lo) * f);
+            d_text(F12, c->series[0].color, LV_OPA_COVER, px + 5, gy + 4, 0, b);
+        }
+        if (c->nseries > 1 && c->series[1].count > 1) {
+            snprintf(b, sizeof(b), "%.*f", scale_digits(scales[1].step),
+                     scales[1].lo + (scales[1].hi - scales[1].lo) * f);
+            d_text(F12, c->series[1].color, LV_OPA_COVER, px + pw - 5, gy + 4, 2, b);
+        }
+    }
 }
 
 static void range_text(int seconds, char *buf, size_t size)
@@ -274,12 +369,44 @@ static void range_text(int seconds, char *buf, size_t size)
     else snprintf(buf, size, "%d с", seconds);
 }
 
-static void time_text(double stamp, char *buf, size_t size)
+static void draw_time_grid(const chart_t *c, int x, int y, int w, int h, bool labels)
 {
-    time_t t = (time_t)stamp;
+    const chart_series_t *source = NULL;
+    for (int i = 0; i < c->nseries; i++) {
+        if (c->series[i].count > 1) {
+            source = &c->series[i];
+            break;
+        }
+    }
+    if (!source) return;
+    double first = source->times[0], last = source->times[source->count - 1];
+    if (last <= first) return;
+
+    // На обычных 12/24 часах — тусклые линии каждые три часа. На длинных
+    // диапазонах шаг увеличивается, чтобы не превратить график в шторку.
+    int step_h = 3;
+    double span_h = (last - first) / 3600.0;
+    while (span_h / step_h > 12 && step_h < 24) step_h *= 2;
+
+    time_t stamp = (time_t)first;
     struct tm tm;
-    localtime_r(&t, &tm);
-    strftime(buf, size, "%H:%M", &tm);
+    localtime_r(&stamp, &tm);
+    tm.tm_min = 0;
+    tm.tm_sec = 0;
+    stamp = mktime(&tm); // ближайшая вниз граница локального часа
+    for (; stamp <= (time_t)last + 3600; stamp += 3600) {
+        if ((double)stamp <= first) continue;
+        localtime_r(&stamp, &tm);
+        if (tm.tm_hour % step_h) continue;
+        int px = x + (int)lround(((double)stamp - first) / (last - first) * (w - 1));
+        if (px <= x + 3 || px >= x + w - 3) continue;
+        d_line(px, y, px, y + h - 1, 0.8f, CHART_GRID, 55);
+        if (labels) {
+            char b[8];
+            snprintf(b, sizeof(b), "%02d", tm.tm_hour);
+            d_text(F12, CHART_DIM, LV_OPA_COVER, px, y + h + 27, 1, b);
+        }
+    }
 }
 
 static void chart_draw_full(lv_event_t *e)
@@ -309,36 +436,47 @@ static void chart_draw_full(lv_event_t *e)
         d_text(F17, s->color, LV_OPA_COVER, cx + 13, s->label && s->label[0] ? 121 : 111, 0, b);
     }
 
-    int x = 54, y = 158, w = 408, h = 238;
+    // Справа оставляем место второй шкале, а не выводим её поверх кривых.
+    int x = 54, y = 158, w = 354, h = 238;
     bool any = false;
     for (int i = 0; i < c->nseries; i++) if (c->series[i].count > 1) any = true;
     if (!any) {
         d_text(F17, CHART_DIM, LV_OPA_COVER, 240, 270, 1, "Нет истории за выбранный период");
         return;
     }
-    for (int i = 0; i <= 4; i++) {
-        int gy = y + i * (h - 1) / 4;
-        d_line(x, gy, x + w - 1, gy, i == 4 ? 1.1f : 0.8f, CHART_GRID, i == 4 ? 130 : 70);
+    chart_scale_t scales[CHART_MAX_SERIES];
+    int divisions = chart_scales(c, scales);
+    for (int i = 0; i <= divisions; i++) {
+        int gy = y + i * (h - 1) / divisions;
+        bool edge = i == divisions;
+        d_line(x, gy, x + w - 1, gy, edge ? 1.1f : 0.8f,
+               CHART_GRID, edge ? 130 : 70);
     }
-    d_line(x, y, x, y + h - 1, 0.8f, CHART_GRID, 70);
-    // Числовая шкала первой кривой; остальные имеют собственное масштабирование.
-    const chart_series_t *first = &c->series[0];
-    float lo, hi;
-    scale_of(first, &lo, &hi);
-    for (int i = 0; i <= 4; i += 2) {
-        float v = hi - (hi - lo) * i / 4;
-        snprintf(b, sizeof(b), "%.*f", first->digits, v);
-        d_text(F12, CHART_DIM, LV_OPA_COVER, x - 8, y + i * (h - 1) / 4 + 4, 2, b);
-    }
-    for (int i = 0; i < c->nseries; i++) draw_curve(&c->series[i], x, y, w, h, true);
-    if (first->count > 1) {
-        time_text(first->times[0], b, sizeof(b));
-        d_text(F13, CHART_DIM, LV_OPA_COVER, x, 423, 0, b);
-        time_text(first->times[first->count - 1], b, sizeof(b));
-        d_text(F13, CHART_DIM, LV_OPA_COVER, x + w, 423, 2, b);
+    draw_time_grid(c, x, y, w, h, true);
+    for (int i = 0; i < c->nseries; i++)
+        draw_curve(&c->series[i], &scales[i], x, y, w, h, true);
+
+    // Первая серия подписана слева, вторая — справа; цвет связывает
+    // числа шкалы с линией. Как в wb-svg-panel, точность зависит от шага.
+    for (int i = 0; i < divisions + 1; i++) {
+        int gy = y + i * (h - 1) / divisions;
+        float f = 1.0f - (float)i / divisions;
+        const chart_series_t *left = &c->series[0];
+        if (left->count > 1) {
+            snprintf(b, sizeof(b), "%.*f", scale_digits(scales[0].step),
+                     scales[0].lo + (scales[0].hi - scales[0].lo) * f);
+            d_text(F12, left->color, LV_OPA_COVER, x - 8, gy + 4, 2, b);
+        }
+        if (c->nseries > 1 && c->series[1].count > 1) {
+            const chart_series_t *right = &c->series[1];
+            snprintf(b, sizeof(b), "%.*f", scale_digits(scales[1].step),
+                     scales[1].lo + (scales[1].hi - scales[1].lo) * f);
+            d_text(F12, right->color, LV_OPA_COVER, x + w + 8, gy + 4, 0, b);
+        }
     }
     d_text(F12, CHART_DIM, LV_OPA_COVER, 240, 457, 1,
-           c->nseries > 1 ? "У каждой кривой своя шкала" : "Нажмите стрелку, чтобы вернуться");
+           c->nseries > 1 ? "Слева и справа — независимые шкалы" :
+                            "Нажмите стрелку, чтобы вернуться");
 }
 
 static void chart_click(lv_event_t *e)

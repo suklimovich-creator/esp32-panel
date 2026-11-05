@@ -29,6 +29,19 @@ void pad_open(pad_t *p);
 bool pad_tile(const pad_t *p, int x, int y, int w, int h, uint32_t page_bg);   // вид плитки, false - не умеет
 bool pad_active(const pad_t *p);                                      // включён / штора открыта
 
+// Графики (charts.c): поле "series" у плитки chart, история - отдельным JSON.
+typedef struct chart chart_t;
+chart_t *chart_parse(const struct cJSON *tile, const char *title);
+void chart_topics(chart_t *c, void (*cb)(const char *topic, void *ctx), void *ctx);
+bool chart_on_value(chart_t *c, const char *topic, const char *value);
+bool chart_history_json(chart_t *c, const char *json);
+const char *chart_history_path(const chart_t *c);
+int charts_count(void);
+chart_t *charts_at(int index);
+void chart_draw_tile(const chart_t *c, int x, int y, int w, int h, bool pressed);
+void chart_open(chart_t *c);
+void chart_redraw_open(void);
+
 // Рисование на слое (pads.c): сначала gfx_begin со слоем события отрисовки.
 void gfx_begin(lv_layer_t *layer);
 extern lv_font_t *F76, *F60, *F46, *F32, *F22S, *F17, *F13, *F12;

@@ -6,6 +6,8 @@
 //   dimmer  - яркость:      level, [state], [temp], [max], [temp_min], [temp_max]
 //   scene   - нажатие:      cmd, [payload], [icon]
 //   sensor  - значение:     value, [unit], [digits], [icon]
+//   chart   - до трёх кривых: series [{value, unit, digits, color, label}],
+//             range, points, history; нажатие открывает график во весь экран
 //   info    - сводка (кондиционер, термостат, шторы...): [value], [unit],
 //             [digits], [map], [lines: [{label, topic, unit, digits, map}]],
 //             [active] - канал «работает», [note] - подпись без данных,
@@ -54,7 +56,7 @@ static const char *TAG = "tiles";
 #define T_DIM    0x8E8E90
 #define T_TRACK  0x3A3B40
 
-typedef enum { T_SWITCH, T_DIMMER, T_SCENE, T_SENSOR, T_INFO, T_UNKNOWN } ttype_t;
+typedef enum { T_SWITCH, T_DIMMER, T_SCENE, T_SENSOR, T_INFO, T_CHART, T_UNKNOWN } ttype_t;
 
 #define MAX_LINES 3
 
@@ -77,6 +79,7 @@ typedef struct {
     int nlines;
     char val[40];                   // основное значение для показа
     pad_t *pad;                     // пульт по нажатию (info)
+    chart_t *chart;                 // история и график по нажатию (chart)
     int lvl, tmp;
     lv_obj_t *card;
     // касание
@@ -457,6 +460,7 @@ static void tile_draw_cb(lv_event_t *e)
     case T_SCENE: draw_scene(t, x, y, w, h); break;
     case T_SENSOR: draw_sensor(t, x, y, w, h); break;
     case T_INFO: draw_info(t, x, y, w, h); break;
+    case T_CHART: chart_draw_tile(t->chart, x, y, w, h, t->pressed); break;
     default: draw_unknown(t, x, y, w, h); break;
     }
 }
@@ -499,6 +503,9 @@ static void click(tile_t *t)
     }
     case T_INFO:
         if (t->pad) pad_open(t->pad);
+        break;
+    case T_CHART:
+        if (t->chart) chart_open(t->chart);
         break;
     default:
         break;
@@ -605,7 +612,7 @@ static void parse_tile(tile_t *t, const cJSON *o)
     const char *type = cJSON_IsString(ty) ? ty->valuestring : "";
     t->type = !strcmp(type, "switch") ? T_SWITCH : !strcmp(type, "dimmer") ? T_DIMMER
             : !strcmp(type, "scene") ? T_SCENE : !strcmp(type, "sensor") ? T_SENSOR
-            : !strcmp(type, "info") ? T_INFO : T_UNKNOWN;
+            : !strcmp(type, "info") ? T_INFO : !strcmp(type, "chart") ? T_CHART : T_UNKNOWN;
     t->title = jstr(o, "title");
     if (!t->title) t->title = ps_strdup(type);
     t->state = jstr(o, "state");
@@ -654,6 +661,10 @@ static void parse_tile(tile_t *t, const cJSON *o)
             t->nlines++;
         }
     }
+    if (t->type == T_CHART) {
+        t->chart = chart_parse(o, t->title);
+        if (!t->chart) t->type = T_UNKNOWN;
+    }
     if (t->type == T_DIMMER && !t->level) t->type = T_UNKNOWN;
     if (t->type == T_SCENE && !t->cmd) t->type = T_UNKNOWN;
     // Высота: h в рядах (0.5 - полряда). По умолчанию квадрат у ленты и
@@ -661,6 +672,7 @@ static void parse_tile(tile_t *t, const cJSON *o)
     int def = 1;
     if (t->type == T_DIMMER && t->w == 1) def = 2;
     if (t->type == T_INFO && (t->value || t->pad || t->nlines)) def = 2;
+    if (t->type == T_CHART) def = 2;
     const cJSON *hj = cJSON_GetObjectItem(o, "h");
     t->hh = cJSON_IsNumber(hj) ? clampi((int)lroundf(hj->valuedouble * 2), 1, 4) : def;
 }
@@ -767,6 +779,7 @@ void tiles_for_each_topic(void (*cb)(const char *topic, void *ctx), void *ctx)
         if (t->active_topic) cb(t->active_topic, ctx);
         for (int k = 0; k < t->nlines; k++) cb(t->lines[k].topic, ctx);
         if (t->pad) pad_topics(t->pad, cb, ctx);
+        if (t->chart) chart_topics(t->chart, cb, ctx);
     }
 }
 
@@ -847,10 +860,22 @@ void tiles_on_value(const char *topic, const char *value)
             if (t->pad && !changed) changed = pad_uses(t->pad, topic);
             break;
         }
+        case T_CHART:
+            if (t->chart) changed = chart_on_value(t->chart, topic, value);
+            if (changed) chart_redraw_open();
+            break;
         default:
             break;
         }
         if (changed) tile_redraw(t);
     }
     ui_unlock();
+}
+
+// Новые точки истории: обновить и плитки, и открытый полноэкранный график.
+void tiles_history_updated(void)
+{
+    for (int i = 0; i < s_count; i++)
+        if (s_tiles[i].type == T_CHART) tile_redraw(&s_tiles[i]);
+    chart_redraw_open();
 }

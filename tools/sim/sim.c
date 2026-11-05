@@ -6,6 +6,7 @@ lv_font_t *f14, *f18, *f22, *f28b, *f80l;
 #include "ui_priv.h"
 void mq_publish(const char *t, const char *p) { printf("MQTT %s = %s\n", t, p); }
 #include "../../main/pads.c"
+#include "../../main/charts.c"
 bool ui_lock(int ms) { return true; }
 void ui_unlock(void) {}
 lv_obj_t *ui_label(lv_obj_t *parent, const lv_font_t *font, uint32_t color, const char *text)
@@ -32,7 +33,7 @@ static char *readf(const char *n) { FILE *f = fopen(n, "rb"); fseek(f, 0, 2); lo
 int main(int argc, char **argv)
 {
     // sim tile.json values.txt out.ppm [sheet]
-    // sim --screen layout.json values.txt out.ppm [страница] - главный экран
+    // sim --screen layout.json values.txt out.ppm [страница] [history.json] [1 - полный экран]
     lv_init();
     lv_tick_set_cb(tick);
     lv_display_t *d = lv_display_create(480, 480);
@@ -71,6 +72,8 @@ int main(int argc, char **argv)
             if (eq) { *eq = 0; tiles_on_value(line, eq + 1); }
         }
         if (argc > 5) show_page(atoi(argv[5]));
+        if (argc > 6 && charts_count()) chart_history_json(charts_at(0), readf(argv[6]));
+        if (argc > 7 && atoi(argv[7]) && charts_count()) chart_open(charts_at(0));
         lv_refr_now(d);
         lv_refr_now(d);
         FILE *o = fopen(argv[4], "wb");

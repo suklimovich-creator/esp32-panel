@@ -42,5 +42,6 @@ void app_main(void)
     web_start();
     mq_start();
     layout_sync_start();
+    history_start();
     ota_start();
 }

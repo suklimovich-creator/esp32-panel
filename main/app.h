@@ -99,6 +99,10 @@ void tiles_build(void *content, void *tabbar, const char *json);   // под ui_
 int tiles_count(void);
 void tiles_for_each_topic(void (*cb)(const char *topic, void *ctx), void *ctx);
 void tiles_on_value(const char *topic, const char *value);   // из задачи MQTT
+void tiles_history_updated(void);                              // новые точки графиков
+
+// ---------------------------------------------------------------- history
+void history_start(void);                   // периодически брать точки графиков
 
 // ---------------------------------------------------------------- ui
 void ui_init(void);                             // вызывается под ui_lock

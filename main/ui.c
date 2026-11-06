@@ -112,7 +112,7 @@ static void build_main(void)
     lv_obj_set_style_bg_color(gear, lv_color_hex(C_CARD), 0);
     lv_obj_set_style_radius(gear, LV_RADIUS_CIRCLE, 0);
     lv_obj_set_style_shadow_width(gear, 0, 0);
-    lv_obj_set_ext_click_area(gear, 10);
+    lv_obj_set_ext_click_area(gear, 12);
     lv_obj_t *gl = ui_label(gear, &lv_font_montserrat_14, C_DIM, LV_SYMBOL_SETTINGS);
     lv_obj_center(gl);
     lv_obj_add_event_cb(gear, open_device, LV_EVENT_CLICKED, NULL);
@@ -222,6 +222,7 @@ static void build_device(void)
     lv_obj_remove_flag(top, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_t *back = button(top, "←  Назад", C_CARD, C_TEXT, back_main);
     lv_obj_set_style_pad_ver(back, 10, 0);
+    lv_obj_set_ext_click_area(back, 12);
     lv_obj_align(back, LV_ALIGN_LEFT_MID, 0, 0);
     lv_obj_t *title = ui_label(top, f22, C_TEXT, "Устройство");
     lv_obj_align(title, LV_ALIGN_RIGHT_MID, -6, 0);

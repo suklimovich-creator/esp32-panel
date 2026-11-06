@@ -759,6 +759,7 @@ static lv_obj_t *new_tab(lv_obj_t *tabbar, const char *title, int idx)
 {
     lv_obj_t *b = lv_button_create(tabbar);
     lv_obj_set_height(b, 36);
+    lv_obj_set_ext_click_area(b, 12);
     lv_obj_set_style_pad_hor(b, 14, 0);
     lv_obj_set_style_pad_ver(b, 0, 0);
     lv_obj_set_style_radius(b, 18, 0);

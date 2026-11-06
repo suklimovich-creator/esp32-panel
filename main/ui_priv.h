@@ -18,6 +18,16 @@ extern lv_font_t *f14, *f18, *f22, *f28b, *f80l;
 
 lv_obj_t *ui_label(lv_obj_t *parent, const lv_font_t *font, uint32_t color, const char *text);
 
+// Камеры wb-svg-panel: snapshot в плитке, MJPEG или snapshot на полном экране.
+typedef struct camera camera_t;
+camera_t *camera_tile_create(lv_obj_t *card, const char *title, const char *snapshot,
+                             const char *stream, int page, int w, int h, float scale);
+void camera_open(camera_t *c);
+void camera_close(void);
+void camera_page_visible(int page);
+void camera_main_visible(bool visible);
+void camera_reset(void);
+
 // Пульты (pads.c): описание - поле "pad" у плитки info.
 typedef struct pad pad_t;
 struct cJSON;

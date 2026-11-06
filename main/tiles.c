@@ -8,6 +8,7 @@
 //   sensor  - значение:     value, [unit], [digits], [icon]
 //   chart   - до трёх кривых: series [{value, unit, digits, color, label}],
 //             range, points, history; нажатие открывает график во весь экран
+//   camera  - snapshot, [stream]; нажатие открывает MJPEG/JPEG во весь экран
 //   info    - сводка (кондиционер, термостат, шторы...): [value], [unit],
 //             [digits], [map], [lines: [{label, topic, unit, digits, map}]],
 //             [active] - канал «работает», [note] - подпись без данных,
@@ -60,7 +61,7 @@ static const char *TAG = "tiles";
 #define T_DIM    0x8E8E90
 #define T_TRACK  0x3A3B40
 
-typedef enum { T_SWITCH, T_DIMMER, T_SCENE, T_SENSOR, T_INFO, T_CHART, T_UNKNOWN } ttype_t;
+typedef enum { T_SWITCH, T_DIMMER, T_SCENE, T_SENSOR, T_INFO, T_CHART, T_CAMERA, T_UNKNOWN } ttype_t;
 
 #define MAX_LINES 3
 
@@ -85,6 +86,8 @@ typedef struct {
     char val[40];                   // основное значение для показа
     pad_t *pad;                     // пульт по нажатию (info)
     chart_t *chart;                 // история и график по нажатию (chart)
+    camera_t *camera;               // JPEG/MJPEG по нажатию (camera)
+    char *snapshot, *stream;        // относительные адреса wb-svg-panel
     int lvl, tmp;
     lv_obj_t *card;
     // касание
@@ -499,6 +502,7 @@ static void tile_draw_cb(lv_event_t *e)
     case T_SENSOR: draw_sensor(t, x, y, w, h); break;
     case T_INFO: draw_info(t, x, y, w, h); break;
     case T_CHART: chart_draw_tile(t->chart, x, y, w, h, t->pressed, s_scale); break;
+    case T_CAMERA: d_card(x, y, w, h, false, t->pressed); break;
     default: draw_unknown(t, x, y, w, h); break;
     }
 }
@@ -544,6 +548,9 @@ static void click(tile_t *t)
         break;
     case T_CHART:
         if (t->chart) chart_open(t->chart);
+        break;
+    case T_CAMERA:
+        if (t->camera) camera_open(t->camera);
         break;
     default:
         break;
@@ -635,7 +642,7 @@ static int tile_span(int cells, int base)
 static int tile_w(const tile_t *t) { return tile_span(t->w_cells, s_col_w); }
 static int tile_h(const tile_t *t) { return tile_span(t->h_cells, s_row_h); }
 
-static void build_tile(lv_obj_t *page, tile_t *t)
+static void build_tile(lv_obj_t *page, tile_t *t, int page_idx)
 {
     lv_obj_t *c = lv_obj_create(page);
     lv_obj_remove_style_all(c);
@@ -647,6 +654,11 @@ static void build_tile(lv_obj_t *page, tile_t *t)
     lv_obj_add_event_cb(c, tile_draw_cb, LV_EVENT_DRAW_MAIN, t);
     lv_obj_add_event_cb(c, tile_touch_cb, LV_EVENT_ALL, t);
     t->card = c;
+    if (t->type == T_CAMERA) {
+        t->camera = camera_tile_create(c, t->title, t->snapshot, t->stream, page_idx,
+                                       tile_w(t), tile_h(t), s_scale);
+        if (!t->camera) t->type = T_UNKNOWN;
+    }
 }
 
 static void parse_tile(tile_t *t, const cJSON *o)
@@ -655,7 +667,8 @@ static void parse_tile(tile_t *t, const cJSON *o)
     const char *type = cJSON_IsString(ty) ? ty->valuestring : "";
     t->type = !strcmp(type, "switch") ? T_SWITCH : !strcmp(type, "dimmer") ? T_DIMMER
             : !strcmp(type, "scene") ? T_SCENE : !strcmp(type, "sensor") ? T_SENSOR
-            : !strcmp(type, "info") ? T_INFO : !strcmp(type, "chart") ? T_CHART : T_UNKNOWN;
+            : !strcmp(type, "info") ? T_INFO : !strcmp(type, "chart") ? T_CHART
+            : !strcmp(type, "camera") ? T_CAMERA : T_UNKNOWN;
     t->title = jstr(o, "title");
     if (!t->title) t->title = ps_strdup(type);
     t->state = jstr(o, "state");
@@ -709,6 +722,11 @@ static void parse_tile(tile_t *t, const cJSON *o)
         t->chart = chart_parse(o, t->title);
         if (!t->chart) t->type = T_UNKNOWN;
     }
+    if (t->type == T_CAMERA) {
+        t->snapshot = jstr(o, "snapshot");
+        t->stream = jstr(o, "stream");
+        if (!t->snapshot) t->type = T_UNKNOWN;
+    }
     if (t->type == T_DIMMER && !t->level) t->type = T_UNKNOWN;
     if (t->type == T_SCENE && !t->cmd) t->type = T_UNKNOWN;
     // Высота: h в рядах (0.5 - полряда). По умолчанию квадрат у ленты и
@@ -716,7 +734,7 @@ static void parse_tile(tile_t *t, const cJSON *o)
     int def = 1;
     if (t->type == T_DIMMER && t->w_cells == 2) def = 2;
     if (t->type == T_INFO && (t->value || t->pad || t->nlines)) def = 2;
-    if (t->type == T_CHART) def = 2;
+    if (t->type == T_CHART || t->type == T_CAMERA) def = 2;
     t->h_cells = clampi(jcells(o, "h", def), 1, 4);
 }
 
@@ -731,6 +749,7 @@ static void show_page(int idx)
         lv_obj_set_style_text_color(lv_obj_get_child(s_tabs[i], 0), lv_color_hex(on ? C_TEXT : C_DIM), 0);
     }
     lv_obj_scroll_to_view(s_tabs[idx], LV_ANIM_ON);
+    camera_page_visible(idx);
 }
 
 static void tab_cb(lv_event_t *e)
@@ -775,6 +794,7 @@ static lv_obj_t *new_tab(lv_obj_t *tabbar, const char *title, int idx)
 void tiles_build(void *content_obj, void *tabbar_obj, const char *json)
 {
     lv_obj_t *content = content_obj, *tabbar = tabbar_obj;
+    camera_reset();
     cJSON *root = cJSON_Parse(json);
     const cJSON *pages = cJSON_GetObjectItem(root, "pages");
     if (!cJSON_IsArray(pages) || cJSON_GetArraySize(pages) == 0) {
@@ -816,7 +836,7 @@ void tiles_build(void *content_obj, void *tabbar_obj, const char *json)
         cJSON_ArrayForEach(o, cJSON_GetObjectItem(pg, "tiles")) {
             tile_t *t = &s_tiles[s_count++];
             parse_tile(t, o);
-            build_tile(s_pages[idx], t);
+            build_tile(s_pages[idx], t, idx);
         }
     }
     cJSON_Delete(root);

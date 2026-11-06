@@ -1,0 +1,48 @@
+{
+  "cols": 3,
+  "pages": [
+    {
+      "title": "Камеры",
+      "tiles": [
+        {
+          "type": "camera",
+          "title": "Ворота",
+          "w": 2,
+          "h": 1.5,
+          "snapshot": "/cam/gate.jpg",
+          "stream": "/cam/gate.mjpeg?width=480&fps=5"
+        },
+        {
+          "type": "camera",
+          "title": "Калитка 640×360",
+          "w": 1,
+          "h": 1.5,
+          "snapshot": "/cam/door.jpg"
+        },
+        {
+          "type": "camera",
+          "title": "Цвета 480×270",
+          "w": 3,
+          "h": 1,
+          "snapshot": "/cam/colors.jpg",
+          "stream": "/cam/colors.mjpeg?width=480&fps=5"
+        },
+        {
+          "type": "sensor",
+          "title": "Температура",
+          "value": "/devices/sensor/controls/temp",
+          "unit": "°C",
+          "w": 1,
+          "h": 0.5
+        },
+        {
+          "type": "scene",
+          "title": "Открыть",
+          "cmd": "/devices/gate/controls/open/on",
+          "w": 2,
+          "h": 0.5
+        }
+      ]
+    }
+  ]
+}

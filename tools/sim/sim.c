@@ -1,6 +1,13 @@
 // Снимок пульта на компьютере: тот же pads.c и LVGL, вывод в PPM.
 #include <stdio.h>
 #include <time.h>
+#ifdef _WIN32
+static void localtime_r(const time_t *stamp, struct tm *out)
+{
+    struct tm *value = localtime(stamp);
+    if (value) *out = *value;
+}
+#endif
 #include "lvgl.h"
 lv_font_t *f14, *f18, *f22, *f28b, *f80l;
 #include "ui_priv.h"
@@ -17,6 +24,64 @@ lv_obj_t *ui_label(lv_obj_t *parent, const lv_font_t *font, uint32_t color, cons
     lv_label_set_text(l, text);
     return l;
 }
+struct camera {
+    lv_image_dsc_t dsc;
+    uint8_t *pixels;
+    bool has_stream;
+};
+camera_t *camera_tile_create(lv_obj_t *card, const char *title, const char *snapshot,
+                             const char *stream, int page, int w, int h, float scale)
+{
+    (void)page;
+    camera_t *c = calloc(1, sizeof(*c));
+    c->has_stream = stream && stream[0];
+    int fw = strstr(snapshot, "door") ? 640 : strstr(snapshot, "colors") ? 480 : 320;
+    int fh = fw == 640 ? 360 : fw == 480 ? 270 : 180;
+    c->pixels = malloc(fw * fh * 2);
+    static const uint16_t colors[] = {0xF800, 0x07E0, 0x001F, 0xFFFF, 0x0000};
+    for (int y = 0; y < fh; y++) for (int x = 0; x < fw; x++) {
+        uint16_t color;
+        if (fw == 480) {
+            color = colors[x * 5 / fw];
+        } else {
+            uint16_t r = x * 31 / (fw - 1);
+            uint16_t g = y * 63 / (fh - 1);
+            uint16_t b = 12 + (x + y) * 15 / (fw + fh - 2);
+            color = (r << 11) | (g << 5) | b;
+        }
+        ((uint16_t *)c->pixels)[y * fw + x] = color;
+    }
+    c->dsc = (lv_image_dsc_t){
+        .header.magic = LV_IMAGE_HEADER_MAGIC, .header.cf = LV_COLOR_FORMAT_RGB565,
+        .header.w = fw, .header.h = fh, .header.stride = fw * 2,
+        .data_size = fw * fh * 2, .data = c->pixels,
+    };
+    int bar_h = (int)(30 * scale + 0.5f);
+    if (bar_h < 22) bar_h = 22;
+    if (bar_h > h / 2) bar_h = h / 2;
+    int image_w = w - 4, image_h = h - bar_h - 4;
+    lv_obj_t *image = lv_image_create(card);
+    lv_obj_set_size(image, image_w, image_h);
+    lv_obj_set_pos(image, 2, 2);
+    lv_image_set_src(image, &c->dsc);
+    int zw = image_w * 256 / fw, zh = image_h * 256 / fh;
+    lv_image_set_scale(image, zw < zh ? zw : zh);
+    lv_obj_t *bar = lv_obj_create(card);
+    lv_obj_set_size(bar, w, bar_h);
+    lv_obj_align(bar, LV_ALIGN_BOTTOM_MID, 0, 0);
+    lv_obj_set_style_bg_color(bar, lv_color_hex(0), 0);
+    lv_obj_set_style_bg_opa(bar, LV_OPA_50, 0);
+    lv_obj_set_style_border_width(bar, 0, 0);
+    lv_obj_set_style_pad_all(bar, 0, 0);
+    lv_obj_t *label = ui_label(card, tile_font(false, 15), C_TEXT, title);
+    lv_obj_align(label, LV_ALIGN_BOTTOM_MID, 0, -7);
+    return c;
+}
+void camera_open(camera_t *c) { (void)c; }
+void camera_close(void) {}
+void camera_page_visible(int page) { (void)page; }
+void camera_main_visible(bool visible) { (void)visible; }
+void camera_reset(void) {}
 #include "../../main/tiles.c"
 
 static uint32_t fb[480 * 480];

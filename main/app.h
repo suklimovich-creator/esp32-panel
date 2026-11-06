@@ -101,6 +101,10 @@ void tiles_for_each_topic(void (*cb)(const char *topic, void *ctx), void *ctx);
 void tiles_on_value(const char *topic, const char *value);   // из задачи MQTT
 void tiles_history_updated(void);                              // новые точки графиков
 
+// ---------------------------------------------------------------- camera
+void camera_reset(void);                    // остановить задачи и освободить кадры до перестройки
+void camera_main_visible(bool visible);     // главный экран показан / скрыт
+
 // ---------------------------------------------------------------- history
 void history_start(void);                   // периодически брать точки графиков
 

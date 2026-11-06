@@ -1,0 +1,1 @@
+/devices/sensor/controls/temp=21.5

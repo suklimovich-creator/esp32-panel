@@ -137,6 +137,27 @@ static void fonts(void)
     F12 = ttf(false, 12);
 }
 
+static const struct { bool bold; int px; } TILE_FONTS[] = {
+    {false, 12}, {true, 13}, {false, 15}, {true, 17}, {false, 17}, {true, 21}, {true, 32}
+};
+static lv_font_t *s_tile_fonts[sizeof(TILE_FONTS) / sizeof(TILE_FONTS[0])];
+
+void tile_fonts_set(float scale)
+{
+    for (size_t i = 0; i < sizeof(TILE_FONTS) / sizeof(TILE_FONTS[0]); i++) {
+        int px = (int)lroundf(TILE_FONTS[i].px * scale);
+        if (px < 1) px = 1;
+        s_tile_fonts[i] = ttf(TILE_FONTS[i].bold, px);
+    }
+}
+
+lv_font_t *tile_font(bool bold, int base_px)
+{
+    for (size_t i = 0; i < sizeof(TILE_FONTS) / sizeof(TILE_FONTS[0]); i++)
+        if (TILE_FONTS[i].bold == bold && TILE_FONTS[i].px == base_px) return s_tile_fonts[i];
+    return NULL;
+}
+
 // ------------------------------------------------------------ helpers
 static char *pstr(const char *s)
 {
@@ -915,7 +936,7 @@ static float shown_pos(const pad_t *p) { return p->has_pos ? clampf(p->v_pos, 0,
 // Окно с небом и шторой в прямоугольнике X,Y,W,H (на пульте 448x320, на
 // плитке меньше: складки, ручка и солнце - в масштабе s). bg - цвет вокруг,
 // им закрываются углы.
-static void d_window(const pad_t *p, int X, int Y, int W, int H, int rad, uint32_t bg)
+static void d_window(const pad_t *p, int X, int Y, int W, int H, int rad, int frame, uint32_t bg)
 {
     float s = W / 448.0f, open = shown_pos(p) / 100.0f;
     lv_area_t clip_old = L->_clip_area, sc = {X, Y, X + W - 1, Y + H - 1};
@@ -967,14 +988,14 @@ static void d_window(const pad_t *p, int X, int Y, int W, int H, int rad, uint32
         L->_clip_area = clip_old;
     }
     // скругление: кольцо цвета фона поверх углов
-    d_border(X - 14, Y - 14, W + 28, H + 28, rad + 14, 14, bg, LV_OPA_COVER);
+    d_border(X - frame, Y - frame, W + 2 * frame, H + 2 * frame, rad + frame, frame, bg, LV_OPA_COVER);
 }
 
 static void draw_cover(pad_t *p)
 {
     d_rect(0, 0, 480, 480, 0, K_BG2, LV_OPA_COVER);
 
-    d_window(p, SC_X, SC_Y, SC_W, SC_H, 18, K_BG2);
+    d_window(p, SC_X, SC_Y, SC_W, SC_H, 18, 14, K_BG2);
     float open = shown_pos(p) / 100.0f;
     d_border(SC_X, SC_Y, SC_W, SC_H, 18, 2, open > 0.01f ? K_ACTIVE : 0x3A3B40, LV_OPA_COVER);
     zone(SC_X - 20, SC_Y - 20, SC_X + SC_W + 20, SC_Y + SC_H + 20, Z_SCENE, 0);
@@ -1309,6 +1330,16 @@ static void upcase(char *d, size_t n, const char *s)
     d[i] = 0;
 }
 
+static float s_tile_scale = 1;
+static int PS(int v) { return (int)lroundf(v * s_tile_scale); }
+static int PL(float v) { int n = (int)lroundf(v * s_tile_scale); return n > 0 ? n : 1; }
+
+#define P_F12 tile_font(false, 12)
+#define P_F13 tile_font(true, 13)
+#define P_F14 tile_font(false, 15)
+#define P_F17 tile_font(true, 17)
+#define P_F32 tile_font(true, 32)
+
 static void tile_ac(const pad_t *p, int x, int y, int w, int h)
 {
     bool on = powered(p);
@@ -1316,67 +1347,71 @@ static void tile_ac(const pad_t *p, int x, int y, int w, int h)
     char b[48];
     // шапка: название слева, режим справа
     upcase(b, sizeof(b), p->title ? p->title : "");
-    d_text(F12, K_DIM, LV_OPA_COVER, x + 12, y + 20, 0, b);
+    d_text(P_F12, K_DIM, LV_OPA_COVER, x + PS(12), y + PS(20), 0, b);
     const opt_t *m = find_opt(p->modes, p->nmodes, p->mode_now);
     const char *word = !on ? "выкл" : m ? m->word : "";
-    int tw = text_w(F12, word);
-    d_text(F12, col, LV_OPA_COVER, x + w - 12, y + 20, 2, word);
-    if (on && m) d_icon(icon_path(m->icon), x + w - 12 - tw - 9, y + 15.5f, 12, 1.6f, col, LV_OPA_COVER);
+    int tw = text_w(P_F12, word);
+    d_text(P_F12, col, LV_OPA_COVER, x + w - PS(12), y + PS(20), 2, word);
+    if (on && m) d_icon(icon_path(m->icon), x + w - PS(12) - tw - PS(9), y + 15.5f * s_tile_scale,
+                        PS(12), 1.6f * s_tile_scale, col, LV_OPA_COVER);
 
     // уставка крупно
     if (p->has_target) snprintf(b, sizeof(b), "%.*f", p->digits, p->v_target);
     else snprintf(b, sizeof(b), "--");
-    d_num_deg(F32, F17, on ? K_INK : K_DIM, x + w / 2.0f + 2, y + 56, -16, b, "°");
+    d_num_deg(P_F32, P_F17, on ? K_INK : K_DIM, x + w / 2.0f + PS(2), y + PS(56), -PS(16), b, "°");
 
     // шкала: дуга большого круга, уставка под меткой посередине
     float R = 0.92f * w, cx = x + w / 2.0f, cy = y + 0.66f * h - R;
     float c0 = p->has_target ? p->v_target : (p->min + p->max) / 2;
     float deg = AC_DEG * 480.0f / w;          // на плитке шкала крупнее в градусах
     if (deg > 12) deg = 12;
-    lv_area_t clip_old = L->_clip_area, ta = {x + 2, y, x + w - 3, y + h - 1}, cl;
+    lv_area_t clip_old = L->_clip_area, ta = {x + PS(2), y, x + w - PS(3), y + h - 1}, cl;
     if (lv_area_intersect(&cl, &clip_old, &ta)) {
         L->_clip_area = cl;
-        d_arc(cx, cy, R, 1.2f, 90 - 70, 90 + 70, K_INK, 31);
+        d_arc(cx, cy, R, 1.2f * s_tile_scale, 90 - 70, 90 + 70, K_INK, 31);
         if (p->has_current) {
             float ac = 90 - (p->v_current - c0) * deg;
             if (ac < 30) ac = 30;
             if (ac > 150) ac = 150;
             float s = ac < 90 ? ac : 90, e = ac < 90 ? 90 : ac;
             if (e - s > 0.3f) {
-                d_arc(cx, cy, R, 9, s, e, col, 30);
-                d_arc(cx, cy, R, 5, s, e, col, 70);
-                d_arc(cx, cy, R, 2.6f, s, e, col, LV_OPA_COVER);
+                d_arc(cx, cy, R, 9 * s_tile_scale, s, e, col, 30);
+                d_arc(cx, cy, R, 5 * s_tile_scale, s, e, col, 70);
+                d_arc(cx, cy, R, 2.6f * s_tile_scale, s, e, col, LV_OPA_COVER);
             }
             float a = ac * (float)M_PI / 180;
-            d_circle(cx + R * cosf(a), cy + R * sinf(a), 3.4f, K_INK, LV_OPA_COVER);
-            d_circle(cx + R * cosf(a), cy + R * sinf(a), 2, K_BG, LV_OPA_COVER);
+            d_circle(cx + R * cosf(a), cy + R * sinf(a), 3.4f * s_tile_scale, K_INK, LV_OPA_COVER);
+            d_circle(cx + R * cosf(a), cy + R * sinf(a), 2 * s_tile_scale, K_BG, LV_OPA_COVER);
         }
         for (float t = floorf(c0) - 6; t <= c0 + 6.01f; t += 0.5f) {
             float a = 90 - (t - c0) * deg;
             if (a < 25 || a > 155) continue;
             bool mj = fabsf(t - roundf(t)) < 0.01f;
             float r = a * (float)M_PI / 180, ca = cosf(r), sa = sinf(r);
-            float r2 = R - (mj ? 6 : 3.5f);
-            d_line(cx + R * ca, cy + R * sa, cx + r2 * ca, cy + r2 * sa, mj ? 1.2f : 1, K_INK, LV_OPA_30);
+            float r2 = R - (mj ? PS(6) : 3.5f * s_tile_scale);
+            d_line(cx + R * ca, cy + R * sa, cx + r2 * ca, cy + r2 * sa,
+                   (mj ? 1.2f : 1) * s_tile_scale, K_INK, LV_OPA_30);
             if (mj && a > 56 && a < 124) {
                 bool cur = p->has_target && fabsf(t - p->v_target) < 0.26f;
                 snprintf(b, sizeof(b), "%d°", (int)lroundf(t));
-                d_text(cur ? F13 : F12, cur ? K_INK : K_DIM, LV_OPA_COVER, cx + (R - 15) * ca, cy + (R - 15) * sa + 4, 1, b);
+                d_text(cur ? P_F13 : P_F12, cur ? K_INK : K_DIM, LV_OPA_COVER,
+                       cx + (R - PS(15)) * ca, cy + (R - PS(15)) * sa + PS(4), 1, b);
             }
         }
-        d_line(cx, cy + R - 9, cx, cy + R + 4, 2.4f, col, LV_OPA_COVER);
+        d_line(cx, cy + R - PS(9), cx, cy + R + PS(4), 2.4f * s_tile_scale, col, LV_OPA_COVER);
         L->_clip_area = clip_old;
     }
     // сейчас - внизу слева
-    if (p->has_current && h >= 120) {
-        d_text(F12, K_DIM, LV_OPA_COVER, x + 12, y + h - 30, 0, "сейчас");
+    if (p->has_current && h >= PS(120)) {
+        d_text(P_F12, K_DIM, LV_OPA_COVER, x + PS(12), y + h - PS(30), 0, "сейчас");
         snprintf(b, sizeof(b), "%.1f°", p->v_current);
-        d_text(F17, K_INK, LV_OPA_COVER, x + 12, y + h - 11, 0, b);
+        d_text(P_F17, K_INK, LV_OPA_COVER, x + PS(12), y + h - PS(11), 0, b);
     }
-    if (p->nfans && h >= 120) {
+    if (p->nfans && h >= PS(120)) {
         const opt_t *f = find_opt(p->fans, p->nfans, p->fan_now);
-        d_icon(IC_FAN, x + w - 22, y + h - 20, 18, 1.6f, on ? K_INK : K_DIM, on ? LV_OPA_COVER : 140);
-        if (f && on) d_text(F12, K_DIM, LV_OPA_COVER, x + w - 22, y + h - 4, 1, f->t);
+        d_icon(IC_FAN, x + w - PS(22), y + h - PS(20), PS(18), 1.6f * s_tile_scale,
+               on ? K_INK : K_DIM, on ? LV_OPA_COVER : 140);
+        if (f && on) d_text(P_F12, K_DIM, LV_OPA_COVER, x + w - PS(22), y + h - PS(4), 1, f->t);
     }
 }
 
@@ -1389,7 +1424,7 @@ static void tile_dial(const pad_t *p, int x, int y, int w, int h)
     uint32_t fill = !on ? 0x5A5B60 : cool ? K_DCOOL : live || !p->state ? K_HEAT : 0x8A8B90;
     char b[48];
     upcase(b, sizeof(b), p->title ? p->title : "");
-    d_text(F12, K_DIM, LV_OPA_COVER, x + w / 2.0f, y + 18, 1, b);
+    d_text(P_F12, K_DIM, LV_OPA_COVER, x + w / 2.0f, y + PS(18), 1, b);
 
     float R = (h < w ? h : w) * 0.235f, cx = x + w / 2.0f, cy = y + h * 0.6f;
     float ang = p->has_target ? d_ang(p, p->v_target) : D_A0;
@@ -1398,19 +1433,21 @@ static void tile_dial(const pad_t *p, int x, int y, int w, int h)
         float a = d_ang(p, t) * (float)M_PI / 180, ca = cosf(a), sa = sinf(a);
         int lstep = (int)lroundf((p->max - p->min) / 4);
         bool mj = lstep > 0 && (t - (int)ceilf(p->min)) % lstep == 0;
-        d_line(cx + (R + 6) * ca, cy + (R + 6) * sa, cx + (R + (mj ? 11 : 9)) * ca, cy + (R + (mj ? 11 : 9)) * sa,
-               mj ? 1.4f : 1, 0xFFFFFF, mj ? 204 : 90);
-        if (mj && w >= 140) {
+        float r1 = R + PS(6), r2 = R + PS(mj ? 11 : 9);
+        d_line(cx + r1 * ca, cy + r1 * sa, cx + r2 * ca, cy + r2 * sa,
+               (mj ? 1.4f : 1) * s_tile_scale, 0xFFFFFF, mj ? 204 : 90);
+        if (mj && w >= PS(140)) {
             snprintf(b, sizeof(b), "%d", t);
-            d_text(F12, 0xFFFFFF, 120, cx + (R + 21) * ca, cy + (R + 21) * sa + 4, 1, b);
+            d_text(P_F12, 0xFFFFFF, 120, cx + (R + PS(21)) * ca,
+                   cy + (R + PS(21)) * sa + PS(4), 1, b);
         }
     }
-    d_arc(cx, cy, R, 4, D_A0, D_A0 + D_SW, 0xFFFFFF, 36);
+    d_arc(cx, cy, R, 4 * s_tile_scale, D_A0, D_A0 + D_SW, 0xFFFFFF, 36);
     if (p->has_target) {
-        d_arc(cx, cy, R, 4, D_A0, ang, fill, on ? LV_OPA_COVER : 140);
+        d_arc(cx, cy, R, 4 * s_tile_scale, D_A0, ang, fill, on ? LV_OPA_COVER : 140);
         float a = ang * (float)M_PI / 180;
-        d_circle(cx + (R + 2) * cosf(a), cy + (R + 2) * sinf(a), 4, K_BG2, LV_OPA_COVER);
-        d_circle(cx + (R + 2) * cosf(a), cy + (R + 2) * sinf(a), 2.8f, 0xFFFFFF, LV_OPA_COVER);
+        d_circle(cx + (R + PS(2)) * cosf(a), cy + (R + PS(2)) * sinf(a), 4 * s_tile_scale, K_BG2, LV_OPA_COVER);
+        d_circle(cx + (R + PS(2)) * cosf(a), cy + (R + PS(2)) * sinf(a), 2.8f * s_tile_scale, 0xFFFFFF, LV_OPA_COVER);
     }
     // ручка
     lv_draw_rect_dsc_t kd;
@@ -1428,17 +1465,18 @@ static void tile_dial(const pad_t *p, int x, int y, int w, int h)
     int kr = (int)lroundf(R * 0.72f);
     for (int i = 0; i < 36; i++) {
         float a = i * 10 * (float)M_PI / 180;
-        d_line(cx + (kr + 1) * cosf(a), cy + (kr + 1) * sinf(a), cx + (kr + 4) * cosf(a), cy + (kr + 4) * sinf(a),
-               2.2f, 0x3C3D42, LV_OPA_COVER);
+        d_line(cx + (kr + PL(1)) * cosf(a), cy + (kr + PL(1)) * sinf(a),
+               cx + (kr + PS(4)) * cosf(a), cy + (kr + PS(4)) * sinf(a),
+               2.2f * s_tile_scale, 0x3C3D42, LV_OPA_COVER);
     }
     lv_area_t ka = {(int)cx - kr, (int)cy - kr, (int)cx + kr, (int)cy + kr};
     lv_draw_rect(L, &kd, &ka);
     if (p->has_target) snprintf(b, sizeof(b), "%.*f", p->digits ? p->digits : 1, p->v_target);
     else snprintf(b, sizeof(b), "--");
-    d_num_deg(F17, F12, on ? K_INK : K_DIM, cx, cy + 3, -6, b, "°");
-    if (p->has_current && kr >= 20) {
+    d_num_deg(P_F17, P_F12, on ? K_INK : K_DIM, cx, cy + PS(3), -PS(6), b, "°");
+    if (p->has_current && kr >= PS(20)) {
         snprintf(b, sizeof(b), "%.1f°", p->v_current);
-        d_text(F12, K_DIM, LV_OPA_COVER, cx, cy + 17, 1, b);
+        d_text(P_F12, K_DIM, LV_OPA_COVER, cx, cy + PS(17), 1, b);
     }
     // состояние внизу
     const char *status = "";
@@ -1450,30 +1488,33 @@ static void tile_dial(const pad_t *p, int x, int y, int w, int h)
         const opt_t *m = find_opt(p->modes, p->nmodes, p->mode_now);
         if (m) status = m->t;
     }
-    d_text(F13, !on ? K_DIM : cool ? K_DCOOL : live ? K_HEAT : K_DIM, LV_OPA_COVER, cx, y + h - 9, 1, status);
+    d_text(P_F13, !on ? K_DIM : cool ? K_DCOOL : live ? K_HEAT : K_DIM, LV_OPA_COVER, cx, y + h - PS(9), 1, status);
 }
 
 static void tile_cover(const pad_t *p, int x, int y, int w, int h, uint32_t page_bg)
 {
-    d_window(p, x, y, w, h, 14, page_bg);
+    d_window(p, x, y, w, h, PS(14), PL(14), page_bg);
     float open = shown_pos(p) / 100.0f;
-    d_border(x, y, w, h, 14, open > 0.01f ? 2 : 1, open > 0.01f ? K_ACTIVE : 0x303135, LV_OPA_COVER);
+    d_border(x, y, w, h, PS(14), open > 0.01f ? PL(2) : PL(1),
+             open > 0.01f ? K_ACTIVE : 0x303135, LV_OPA_COVER);
     char b[48];
-    d_text(f14, K_INK, LV_OPA_COVER, x + 12, y + h - (h >= 100 ? 30 : 26), 0, p->title ? p->title : "");
+    bool square = h >= PS(100);
+    d_text(P_F14, K_INK, LV_OPA_COVER, x + PS(12), y + h - PS(square ? 30 : 26), 0, p->title ? p->title : "");
     if (p->has_pos) snprintf(b, sizeof(b), "Открыто %d%%", (int)lroundf(shown_pos(p)));
     else snprintf(b, sizeof(b), "Нет данных");
-    d_text(F12, 0xC8CACF, LV_OPA_COVER, x + 12, y + h - (h >= 100 ? 11 : 8), 0, b);
+    d_text(P_F12, 0xC8CACF, LV_OPA_COVER, x + PS(12), y + h - PS(square ? 11 : 8), 0, b);
 }
 
 // Плитка с пультом: true - нарисована (кондиционер, циферблат, штора).
-bool pad_tile(const pad_t *p, int x, int y, int w, int h, uint32_t page_bg)
+bool pad_tile(const pad_t *p, int x, int y, int w, int h, uint32_t page_bg, float scale)
 {
     if (!p) return false;
+    s_tile_scale = scale;
     if (p->kind == PAD_COVER) {
         tile_cover(p, x, y, w, h, page_bg);
         return true;
     }
-    if (h < 120) return false;      // низкой плитке хватает сводки
+    if (h < PS(120)) return false;      // низкой плитке хватает сводки
     if (p->ac) tile_ac(p, x, y, w, h);
     else tile_dial(p, x, y, w, h);
     return true;

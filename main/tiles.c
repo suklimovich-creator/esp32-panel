@@ -15,9 +15,10 @@
 //             [pad] - пульт по нажатию (pads.c); с ним плитка рисует прибор
 // Явные адреса команд (с сервера, например Sprut.hub): state_cmd,
 // level_cmd, temp_cmd; у выключателя - cmd. У выключателя бывает invert.
-// У всех: title, w - ширина в колонках 1-3 (диммер по умолчанию 3),
-// h - высота в рядах: 1 - квадрат, 0.5 - половина (выключатель, сцена,
-// датчик, широкий диммер по умолчанию 0.5, остальные 1).
+// У всех: title, w - ширина в колонках с шагом 0.5 (диммер по умолчанию
+// занимает всю строку), h - высота в рядах с шагом 0.5: 1 - квадрат,
+// 0.5 - половина (выключатель, сцена, датчик, широкий диммер по умолчанию
+// 0.5, остальные 1). Число колонок задаёт корневое cols, по умолчанию 3.
 // Команда по умолчанию - тот же топик с "/on" на конце (правило Wiren Board).
 //
 // Жесты как у панели: нажатие - включить/выключить (сцена - нажать, сводка -
@@ -36,11 +37,14 @@
 
 static const char *TAG = "tiles";
 
-// Сетка: 3 колонки по 146 px, ряд - 146 px, полряда - 69 px.
-#define COL_W 146
-#define ROW_H 69
-#define GAP 8
+// Эталонная сетка с тремя колонками; реальные размеры зависят от cols.
+#define BASE_COL_W 146
+#define BASE_PAGE_PAD_X 12
+#define BASE_PAGE_PAD_TOP 4
+#define BASE_PAGE_PAD_BOTTOM 16
+#define BASE_GAP 8
 #define MAX_PAGES 12
+#define MAX_COLS 12
 #define PUB_EVERY_MS 150        // не чаще при перетаскивании
 #define ECHO_IGNORE_MS 1500     // после касания не дёргать плитку эхом брокера
 #define DRAG_SLOP 8
@@ -71,7 +75,8 @@ typedef struct {
     ttype_t type;
     char *title, *state, *state_cmd, *level, *level_cmd, *temp, *temp_cmd;
     char *value, *cmd, *payload, *unit, *icon;
-    int digits, max, temp_min, temp_max, w, hh;     // hh - высота в полрядах
+    int digits, max, temp_min, temp_max;
+    int w_cells, h_cells;            // ширина и высота в полуединицах сетки
     bool on, invert, light, active, has_val;
     cJSON *map;                     // подписи значений (info)
     char *active_topic, *note;      // info
@@ -93,6 +98,19 @@ static tile_t *s_tiles;
 static int s_count;
 static lv_obj_t *s_pages[MAX_PAGES], *s_tabs[MAX_PAGES];
 static int s_npages;
+static int s_cols = 3, s_col_w = BASE_COL_W, s_row_h = BASE_COL_W, s_gap = BASE_GAP;
+static float s_scale = 1.0f;
+
+static int TS(int v) { return (int)lroundf(v * s_scale); }
+static int TL(float v) { int n = (int)lroundf(v * s_scale); return n > 0 ? n : 1; }
+
+#define T_F12 tile_font(false, 12)
+#define T_F13 tile_font(true, 13)
+#define T_F14 tile_font(false, 15)
+#define T_F17 tile_font(true, 17)
+#define T_F18 tile_font(false, 17)
+#define T_F22S tile_font(true, 21)
+#define T_F32 tile_font(true, 32)
 
 int tiles_count(void) { return s_count; }
 
@@ -117,6 +135,12 @@ static int jint(const cJSON *o, const char *key, int def)
 {
     const cJSON *v = cJSON_GetObjectItem(o, key);
     return cJSON_IsNumber(v) ? v->valueint : def;
+}
+
+static int jcells(const cJSON *o, const char *key, int def)
+{
+    const cJSON *v = cJSON_GetObjectItem(o, key);
+    return cJSON_IsNumber(v) ? (int)lround(v->valuedouble * 2) : def;
 }
 
 static char *cmd_of(const char *topic, char *explicit_cmd)
@@ -172,6 +196,7 @@ static uint32_t mix(uint32_t a, uint32_t b, float f)
 // Текст, урезанный по ширине: многоточие в конце.
 static void d_text_fit(const lv_font_t *f, uint32_t c, float x, float base, int maxw, const char *t)
 {
+    if (maxw <= 0) return;
     char b[96];
     snprintf(b, sizeof(b), "%s", t ? t : "");
     if (text_w(f, b) > maxw) {
@@ -188,26 +213,27 @@ static void d_text_fit(const lv_font_t *f, uint32_t c, float x, float base, int 
 // ------------------------------------------------------------ части рисунка
 static void d_card(int x, int y, int w, int h, bool on, bool pressed)
 {
-    if (on) d_vgrad(x, y, w, h, 14, T_ON1, LV_OPA_COVER, T_ON2, LV_OPA_COVER);
-    else d_vgrad(x, y, w, h, 14, T_BG1, LV_OPA_COVER, T_BG2, LV_OPA_COVER);
-    if (pressed) d_rect(x, y, w, h, 14, 0xFFFFFF, 18);
-    d_border(x, y, w, h, 14, on ? 2 : 1, on ? T_ACT : T_EDGE, LV_OPA_COVER);
+    int r = TS(14);
+    if (on) d_vgrad(x, y, w, h, r, T_ON1, LV_OPA_COVER, T_ON2, LV_OPA_COVER);
+    else d_vgrad(x, y, w, h, r, T_BG1, LV_OPA_COVER, T_BG2, LV_OPA_COVER);
+    if (pressed) d_rect(x, y, w, h, r, 0xFFFFFF, 18);
+    d_border(x, y, w, h, r, on ? TL(2) : TL(1), on ? T_ACT : T_EDGE, LV_OPA_COVER);
 }
 
 // Индикатор на корпусе: у выключенного светится (найти в темноте), у
 // включённого - тёмный с риской. Как у панели.
 static void d_pill(float cx, float y, bool on)
 {
-    int w = 22, h = 7, x = (int)lroundf(cx - w / 2.0f);
+    int w = TS(22), h = TS(7), x = (int)lroundf(cx - w / 2.0f);
     if (!on) {
-        d_rect(x - 5, (int)y - 4, w + 10, h + 8, 8, T_ACT, 26);
-        d_rect(x - 2, (int)y - 2, w + 4, h + 4, 6, T_ACT, 50);
-        d_rect(x, (int)y, w, h, 4, 0xF7B955, LV_OPA_COVER);
-        d_line(x + 5, y + h / 2.0f, x + w - 5, y + h / 2.0f, 2, 0xFFE6B0, LV_OPA_COVER);
+        d_rect(x - TS(5), (int)y - TS(4), w + TS(10), h + TS(8), TS(8), T_ACT, 26);
+        d_rect(x - TS(2), (int)y - TS(2), w + TS(4), h + TS(4), TS(6), T_ACT, 50);
+        d_rect(x, (int)y, w, h, TS(4), 0xF7B955, LV_OPA_COVER);
+        d_line(x + TS(5), y + h / 2.0f, x + w - TS(5), y + h / 2.0f, TL(2), 0xFFE6B0, LV_OPA_COVER);
     } else {
-        d_rect(x, (int)y, w, h, 4, 0x141518, LV_OPA_COVER);
-        d_border(x, (int)y, w, h, 4, 1, 0x3A3B40, LV_OPA_COVER);
-        d_line(x + 6, y + h / 2.0f, x + w - 6, y + h / 2.0f, 1.5f, 0x7A7B80, LV_OPA_COVER);
+        d_rect(x, (int)y, w, h, TS(4), 0x141518, LV_OPA_COVER);
+        d_border(x, (int)y, w, h, TS(4), TL(1), 0x3A3B40, LV_OPA_COVER);
+        d_line(x + TS(6), y + h / 2.0f, x + w - TS(6), y + h / 2.0f, TL(1.5f), 0x7A7B80, LV_OPA_COVER);
     }
 }
 
@@ -215,26 +241,27 @@ static void d_pill(float cx, float y, bool on)
 static void d_sphere(float cx, float cy, float r, bool on, float bright)
 {
     if (on) {
-        for (int i = 3; i >= 1; i--) d_circle(cx, cy, r + i * 5.5f, 0xC89A5A, (lv_opa_t)(10 + 22 * bright / i));
+        for (int i = 3; i >= 1; i--)
+            d_circle(cx, cy, r + i * 5.5f * s_scale, 0xC89A5A, (lv_opa_t)(10 + 22 * bright / i));
     }
     uint32_t edge = on ? 0x5C5245 : 0x3E3B37, hi = on ? mix(0xB9AE9C, 0xF0E7D8, bright) : 0x9F968A;
-    int n = r > 30 ? 20 : 12;
+    int n = r > 30 * s_scale ? 20 : 12;
     for (int i = 0; i <= n; i++) {
         float k = i / (float)n, rr = r * (1 - k * 0.82f);
         d_circle(cx - r * 0.28f * k, cy - r * 0.30f * k, rr, mix(edge, hi, k * k * 0.9f + k * 0.1f), LV_OPA_COVER);
     }
-    d_arc(cx, cy, r - 1, 1, 0, 360, 0x8A8378, 90);
+    d_arc(cx, cy, r - TL(1), TL(1), 0, 360, 0x8A8378, 90);
 }
 
 static void d_knob(float x, float y, float r)
 {
-    d_circle(x, y, r + 1.6f, 0x17181B, LV_OPA_COVER);
+    d_circle(x, y, r + 1.6f * s_scale, 0x17181B, LV_OPA_COVER);
     d_circle(x, y, r, 0xFFFFFF, LV_OPA_COVER);
 }
 
 static void d_title(const tile_t *t, int x, int y, int w, int h)
 {
-    d_text_fit(f14, T_INK, x + 12, y + h - 13, w - 24, t->title);
+    d_text_fit(T_F14, T_INK, x + TS(12), y + h - TS(13), w - TS(24), t->title);
 }
 
 static void pct_text(const tile_t *t, char *b, size_t n)
@@ -250,41 +277,44 @@ static void draw_light_sq(const tile_t *t, int x, int y, int w, int h)
     float f = t->max ? clampi(t->lvl, 0, t->max) / (float)t->max : 0;
     char b[16];
     d_card(x, y, w, h, on, t->pressed && !t->dragging);
-    float k = h / 146.0f;
+    float k = s_scale * h / (float)s_row_h;
     if (t->light) {
         float cx = x + w * 0.47f, cy = y + 64 * k, r = 36 * k, ra = r + 11 * k;
         d_sphere(cx, cy, r, on, f);
-        d_arc(cx, cy, ra, 3, 160, 300, T_TRACK, LV_OPA_COVER);
+        d_arc(cx, cy, ra, 3 * k, 160, 300, T_TRACK, LV_OPA_COVER);
         float a = 160 + 140 * f;
-        if (f > 0.005f) d_arc(cx, cy, ra, 3, 160, a, on ? T_ACT : 0x9A9BA0, LV_OPA_COVER);
+        if (f > 0.005f) d_arc(cx, cy, ra, 3 * k, 160, a, on ? T_ACT : 0x9A9BA0, LV_OPA_COVER);
         float rad = a * (float)M_PI / 180;
-        d_knob(cx + (ra + 1.5f) * cosf(rad), cy + (ra + 1.5f) * sinf(rad), 4.2f);
+        d_knob(cx + (ra + 1.5f * k) * cosf(rad), cy + (ra + 1.5f * k) * sinf(rad), 4.2f * k);
         if (t->temp) {
             float rd = r + 12 * k;
             for (int i = 0; i <= 20; i++) {
                 float q = i / 20.0f, ad = (148 - 116 * q) * (float)M_PI / 180;
                 uint32_t c = q < 0.5f ? mix(0x5F9BE0, 0xD2D2D2, q * 2) : mix(0xD2D2D2, 0xE89A4A, q * 2 - 1);
-                d_circle(cx + rd * cosf(ad), cy + rd * sinf(ad), 1.7f, c, on ? LV_OPA_COVER : 150);
+                d_circle(cx + rd * cosf(ad), cy + rd * sinf(ad), 1.7f * k, c, on ? LV_OPA_COVER : 150);
             }
             int span = t->temp_max - t->temp_min;
             float q = span ? 1 - clampi(t->tmp - t->temp_min, 0, span) / (float)span : 0.5f;
             float ad = (148 - 116 * q) * (float)M_PI / 180;
-            d_knob(cx + rd * cosf(ad), cy + rd * sinf(ad), 4);
+            d_knob(cx + rd * cosf(ad), cy + rd * sinf(ad), 4 * k);
         }
     } else {
         // пластина диммера с рёбрами и ползунок справа
-        int px = x + (int)(w * 0.265f), py = y + (int)(21 * k), pw = (int)(w * 0.36f), ph = (int)(89 * k);
-        d_rect(px, py, pw, ph, 7, 0x2B2C30, LV_OPA_COVER);
-        d_border(px, py, pw, ph, 7, 1, 0x3A3B3F, LV_OPA_COVER);
-        d_vgrad(px + 4, py + 4, pw - 8, ph - 8, 3, 0x18191C, LV_OPA_COVER, 0x232428, LV_OPA_COVER);
-        for (int yy = py + 7; yy < py + ph - 6; yy += 5) d_line(px + 6, yy, px + pw - 6, yy, 1.4f, 0x4A4B50, 170);
+        int px = x + (int)(w * 0.265f), py = y + (int)(21 * k);
+        int pw = (int)(w * 0.36f), ph = (int)(89 * k);
+        d_rect(px, py, pw, ph, TS(7), 0x2B2C30, LV_OPA_COVER);
+        d_border(px, py, pw, ph, TS(7), TL(1), 0x3A3B3F, LV_OPA_COVER);
+        d_vgrad(px + TS(4), py + TS(4), pw - TS(8), ph - TS(8), TS(3),
+                0x18191C, LV_OPA_COVER, 0x232428, LV_OPA_COVER);
+        for (int yy = py + TS(7); yy < py + ph - TS(6); yy += TL(5))
+            d_line(px + TS(6), yy, px + pw - TS(6), yy, 1.4f * k, 0x4A4B50, 170);
         float bx = x + w * 0.70f, by1 = y + h * 0.27f, by2 = y + h * 0.73f;
-        d_line(bx, by1, bx, by2, 4, T_TRACK, LV_OPA_COVER);
-        if (f > 0.005f) d_line(bx, by2 - (by2 - by1) * f, bx, by2, 4, on ? T_ACT : 0x9A9BA0, LV_OPA_COVER);
+        d_line(bx, by1, bx, by2, 4 * k, T_TRACK, LV_OPA_COVER);
+        if (f > 0.005f) d_line(bx, by2 - (by2 - by1) * f, bx, by2, 4 * k, on ? T_ACT : 0x9A9BA0, LV_OPA_COVER);
     }
-    d_pill(x + w / 2.0f, y + 4, on);
+    d_pill(x + w / 2.0f, y + TS(4), on);
     pct_text(t, b, sizeof(b));
-    d_text(f18, T_INK, LV_OPA_COVER, x + w - 12, y + 31 * k, 2, b);
+    d_text(T_F18, T_INK, LV_OPA_COVER, x + w - TS(12), y + 31 * k, 2, b);
     d_title(t, x, y, w, h);
 }
 
@@ -297,24 +327,27 @@ static void draw_light_strip(const tile_t *t, int x, int y, int w, int h)
     d_card(x, y, w, h, on, t->pressed && !t->dragging);
     float cy = y + h / 2.0f;
     if (t->light) {
-        d_sphere(x + 33, cy, 21, on, f);
+        d_sphere(x + TS(33), cy, TS(21), on, f);
     } else {
-        d_rect(x + 18, (int)cy - 24, 30, 48, 5, 0x2B2C30, LV_OPA_COVER);
-        d_border(x + 18, (int)cy - 24, 30, 48, 5, 1, 0x3A3B3F, LV_OPA_COVER);
-        for (int yy = (int)cy - 19; yy < cy + 20; yy += 5) d_line(x + 22, yy, x + 44, yy, 1.2f, 0x4A4B50, 170);
+        d_rect(x + TS(18), (int)cy - TS(24), TS(30), TS(48), TS(5), 0x2B2C30, LV_OPA_COVER);
+        d_border(x + TS(18), (int)cy - TS(24), TS(30), TS(48), TS(5), TL(1), 0x3A3B3F, LV_OPA_COVER);
+        for (int yy = (int)cy - TS(19); yy < cy + TS(20); yy += TL(5))
+            d_line(x + TS(22), yy, x + TS(44), yy, 1.2f * s_scale, 0x4A4B50, 170);
     }
-    int tx = x + 64;
-    d_text_fit(f14, T_INK, tx, cy - 3, w - (tx - x) - 60, t->title);
+    int tx = x + TS(64);
+    d_text_fit(T_F14, T_INK, tx, cy - TS(3), w - (tx - x) - TS(60), t->title);
     if (on) pct_text(t, b, sizeof(b));
     else snprintf(b, sizeof(b), "Выкл");
-    d_text(f18, on ? T_INK : T_DIM, LV_OPA_COVER, x + w - 12, cy - 3, 2, b);
-    float bx1 = tx, bx2 = x + w - 14, byy = y + h - 17;
-    d_line(bx1, byy, bx2, byy, 4, T_TRACK, LV_OPA_COVER);
-    if (f > 0.005f) d_line(bx1, byy, bx1 + (bx2 - bx1) * f, byy, 4, on ? T_ACT : 0x9A9BA0, LV_OPA_COVER);
+    d_text(T_F18, on ? T_INK : T_DIM, LV_OPA_COVER, x + w - TS(12), cy - TS(3), 2, b);
+    float bx1 = tx, bx2 = x + w - TS(14), byy = y + h - TS(17);
+    d_line(bx1, byy, bx2, byy, 4 * s_scale, T_TRACK, LV_OPA_COVER);
+    if (f > 0.005f)
+        d_line(bx1, byy, bx1 + (bx2 - bx1) * f, byy, 4 * s_scale, on ? T_ACT : 0x9A9BA0, LV_OPA_COVER);
     if (t->temp) {
         int span = t->temp_max - t->temp_min;
         float q = span ? 1 - clampi(t->tmp - t->temp_min, 0, span) / (float)span : 0.5f;
-        d_circle(bx1 + (bx2 - bx1) * q, byy + 7, 2.2f, mix(0x5F9BE0, 0xE89A4A, q), LV_OPA_COVER);
+        d_circle(bx1 + (bx2 - bx1) * q, byy + TS(7), 2.2f * s_scale,
+                 mix(0x5F9BE0, 0xE89A4A, q), LV_OPA_COVER);
     }
 }
 
@@ -323,25 +356,28 @@ static void draw_switch(const tile_t *t, int x, int y, int w, int h)
 {
     bool on = t->on;
     d_card(x, y, w, h, on, t->pressed);
-    if (h >= 100) {
-        float k = h / 146.0f;
-        int rx = x + (int)(w / 2.0f - 23), ry = y + (int)(15 * k), rw = 46, rh = (int)(92 * k);
-        d_rect(rx, ry, rw, rh, 12, 0x1C1D20, LV_OPA_COVER);
-        if (on) d_vgrad(rx, ry + rh / 2, rw, rh - rh / 2, 12, 0x3A3B40, LV_OPA_COVER, 0x2E2F34, LV_OPA_COVER);
-        else d_line(rx + 12, ry + rh / 2.0f, rx + rw - 12, ry + rh / 2.0f, 1.5f, 0x0E0F11, LV_OPA_COVER);
-        d_border(rx, ry, rw, rh, 12, 1, 0x3A3B40, LV_OPA_COVER);
-        d_pill(rx + rw / 2.0f, ry + 9, on);
+    if (h >= 100 * s_scale) {
+        float k = s_scale * h / (float)s_row_h;
+        int rw = TS(46), rh = (int)(92 * k);
+        int rx = x + (w - rw) / 2, ry = y + (int)(15 * k);
+        d_rect(rx, ry, rw, rh, TS(12), 0x1C1D20, LV_OPA_COVER);
+        if (on) d_vgrad(rx, ry + rh / 2, rw, rh - rh / 2, TS(12),
+                        0x3A3B40, LV_OPA_COVER, 0x2E2F34, LV_OPA_COVER);
+        else d_line(rx + TS(12), ry + rh / 2.0f, rx + rw - TS(12), ry + rh / 2.0f,
+                    1.5f * s_scale, 0x0E0F11, LV_OPA_COVER);
+        d_border(rx, ry, rw, rh, TS(12), TL(1), 0x3A3B40, LV_OPA_COVER);
+        d_pill(rx + rw / 2.0f, ry + TS(9), on);
         d_title(t, x, y, w, h);
     } else {
-        int s = h - 16, rx = x + 8, ry = y + 8;
-        d_vgrad(rx, ry, s, s, 12, 0x2E2F33, LV_OPA_COVER, 0x222326, LV_OPA_COVER);
-        d_border(rx, ry, s, s, 12, 1, 0x3A3B40, LV_OPA_COVER);
+        int s = h - TS(16), rx = x + TS(8), ry = y + TS(8);
+        d_vgrad(rx, ry, s, s, TS(12), 0x2E2F33, LV_OPA_COVER, 0x222326, LV_OPA_COVER);
+        d_border(rx, ry, s, s, TS(12), TL(1), 0x3A3B40, LV_OPA_COVER);
         float cx = rx + s / 2.0f, cy = ry + s / 2.0f;
-        d_line(cx, ry + 6, cx, ry + s - 6, 1, 0x101113, LV_OPA_COVER);
-        d_rect((int)cx - 5, (int)cy - 10, 10, 20, 4, 0x141518, LV_OPA_COVER);
-        d_border((int)cx - 5, (int)cy - 10, 10, 20, 4, 1, 0x3A3B40, LV_OPA_COVER);
-        d_line(cx, cy - 4, cx, cy + 4, 2, on ? 0xFFE6B0 : 0x9A9BA0, LV_OPA_COVER);
-        d_text_fit(f14, T_INK, rx + s + 12, cy + 5, w - s - 32, t->title);
+        d_line(cx, ry + TS(6), cx, ry + s - TS(6), TL(1), 0x101113, LV_OPA_COVER);
+        d_rect((int)cx - TS(5), (int)cy - TS(10), TS(10), TS(20), TS(4), 0x141518, LV_OPA_COVER);
+        d_border((int)cx - TS(5), (int)cy - TS(10), TS(10), TS(20), TS(4), TL(1), 0x3A3B40, LV_OPA_COVER);
+        d_line(cx, cy - TS(4), cx, cy + TS(4), TL(2), on ? 0xFFE6B0 : 0x9A9BA0, LV_OPA_COVER);
+        d_text_fit(T_F14, T_INK, rx + s + TS(12), cy + TS(5), w - s - TS(32), t->title);
     }
 }
 
@@ -349,12 +385,12 @@ static void draw_scene(const tile_t *t, int x, int y, int w, int h)
 {
     d_card(x, y, w, h, t->flash, t->pressed);
     const char *ic = icon_path(t->icon ? t->icon : "power");
-    if (h >= 100) {
-        d_icon(ic, x + w / 2.0f, y + h * 0.42f, 40, 2.4f, T_INK, LV_OPA_COVER);
+    if (h >= 100 * s_scale) {
+        d_icon(ic, x + w / 2.0f, y + h * 0.42f, TS(40), 2.4f * s_scale, T_INK, LV_OPA_COVER);
         d_title(t, x, y, w, h);
     } else {
-        d_icon(ic, x + 29, y + h / 2.0f, 26, 2, T_INK, LV_OPA_COVER);
-        d_text_fit(f14, T_INK, x + 52, y + h / 2.0f + 5, w - 62, t->title);
+        d_icon(ic, x + TS(29), y + h / 2.0f, TS(26), 2 * s_scale, T_INK, LV_OPA_COVER);
+        d_text_fit(T_F14, T_INK, x + TS(52), y + h / 2.0f + TS(5), w - TS(62), t->title);
     }
 }
 
@@ -365,16 +401,16 @@ static void draw_sensor(const tile_t *t, int x, int y, int w, int h)
     snprintf(b, sizeof(b), "%s%s%s", t->has_val ? t->val : "—", t->unit && t->has_val ? " " : "",
              t->unit && t->has_val ? t->unit : "");
     const char *ic = icon_path(t->icon ? t->icon : "thermo");
-    if (h >= 100) {
-        d_icon(ic, x + 22, y + 24, 22, 1.8f, T_DIM, LV_OPA_COVER);
-        d_text(f18, T_INK, LV_OPA_COVER, x + w - 12, y + 31, 2, b);
+    if (h >= 100 * s_scale) {
+        d_icon(ic, x + TS(22), y + TS(24), TS(22), 1.8f * s_scale, T_DIM, LV_OPA_COVER);
+        d_text(T_F18, T_INK, LV_OPA_COVER, x + w - TS(12), y + TS(31), 2, b);
         d_title(t, x, y, w, h);
     } else {
-        d_icon(ic, x + 22, y + h / 2.0f, 22, 1.8f, T_DIM, LV_OPA_COVER);
-        d_text(F22S, T_INK, LV_OPA_COVER, x + 42, y + 33, 0, t->has_val ? t->val : "—");
+        d_icon(ic, x + TS(22), y + h / 2.0f, TS(22), 1.8f * s_scale, T_DIM, LV_OPA_COVER);
+        d_text(T_F22S, T_INK, LV_OPA_COVER, x + TS(42), y + TS(33), 0, t->has_val ? t->val : "—");
         if (t->unit && t->has_val)
-            d_text(F12, T_DIM, LV_OPA_COVER, x + 44 + text_w(F22S, t->val), y + 24, 0, t->unit);
-        d_text_fit(F12, T_DIM, x + 42, y + h - 12, w - 52, t->title);
+            d_text(T_F12, T_DIM, LV_OPA_COVER, x + TS(44) + text_w(T_F22S, t->val), y + TS(24), 0, t->unit);
+        d_text_fit(T_F12, T_DIM, x + TS(42), y + h - TS(12), w - TS(52), t->title);
     }
 }
 
@@ -399,40 +435,42 @@ static void info_lines(const tile_t *t, char *buf, size_t size, const char *sep)
 
 static void draw_info(const tile_t *t, int x, int y, int w, int h)
 {
-    bool on = true;
+    bool on = true, square = h >= 100 * s_scale;
     if (t->pad) pad_power(t->pad, &on);
-    if (t->pad && h >= 100) d_card(x, y, w, h, false, false);
-    if (t->pad && pad_tile(t->pad, x, y, w, h, C_BG)) {
-        if (t->pressed) d_rect(x, y, w, h, 14, 0xFFFFFF, 18);
+    if (t->pad && square) d_card(x, y, w, h, false, false);
+    if (t->pad && pad_tile(t->pad, x, y, w, h, C_BG, s_scale)) {
+        if (t->pressed) d_rect(x, y, w, h, TS(14), 0xFFFFFF, 18);
         return;
     }
     d_card(x, y, w, h, false, t->pressed);
-    if (t->active && on) d_border(x, y, w, h, 14, 1, 0x6A5530, LV_OPA_COVER);
-    d_text_fit(F12, T_DIM, x + 12, y + 19, w - 24, t->title);
+    if (t->active && on) d_border(x, y, w, h, TS(14), TL(1), 0x6A5530, LV_OPA_COVER);
+    d_text_fit(T_F12, T_DIM, x + TS(12), y + TS(19), w - TS(24), t->title);
     char b[160];
-    int vy = y + (h >= 100 ? 54 : 44);
+    int vy = y + TS(square ? 54 : 44);
     if (t->value) {
         const char *v = t->has_val ? t->val : "—";
-        d_text(h >= 100 ? F32 : F22S, on ? T_INK : T_DIM, LV_OPA_COVER, x + 12, vy, 0, v);
+        const lv_font_t *vf = square ? T_F32 : T_F22S;
+        d_text(vf, on ? T_INK : T_DIM, LV_OPA_COVER, x + TS(12), vy, 0, v);
         if (t->unit && t->unit[0])
-            d_text(F13, T_DIM, LV_OPA_COVER, x + 15 + text_w(h >= 100 ? F32 : F22S, v), vy - (h >= 100 ? 14 : 9), 0, t->unit);
+            d_text(T_F13, T_DIM, LV_OPA_COVER, x + TS(15) + text_w(vf, v),
+                   vy - TS(square ? 14 : 9), 0, t->unit);
     }
     if (t->nlines || t->note) {
-        if (h >= 100 && w < 200) {
+        if (square && w < 200 * s_scale) {
             // узкая: по строке на подробность (сколько влезет)
             info_lines(t, b, sizeof(b), "\n");
-            float base = vy + 22;
+            float base = vy + TS(22);
             char *ln = b;
-            while (ln && *ln && base < y + h - 4) {
+            while (ln && *ln && base < y + h - TS(4)) {
                 char *nl = strchr(ln, '\n');
                 if (nl) *nl = 0;
-                d_text_fit(F12, T_DIM, x + 12, base, w - 24, ln);
-                base += 17;
+                d_text_fit(T_F12, T_DIM, x + TS(12), base, w - TS(24), ln);
+                base += TL(17);
                 ln = nl ? nl + 1 : NULL;
             }
         } else {
             info_lines(t, b, sizeof(b), "  ·  ");
-            d_text_fit(F12, T_DIM, x + 12, y + h - 12, w - 24, b);
+            d_text_fit(T_F12, T_DIM, x + TS(12), y + h - TS(12), w - TS(24), b);
         }
     }
 }
@@ -440,8 +478,8 @@ static void draw_info(const tile_t *t, int x, int y, int w, int h)
 static void draw_unknown(const tile_t *t, int x, int y, int w, int h)
 {
     d_card(x, y, w, h, false, false);
-    d_text_fit(f14, T_DIM, x + 12, y + 26, w - 24, t->title);
-    d_text(F12, T_DIM, LV_OPA_COVER, x + 12, y + 46, 0, "тип не поддерживается");
+    d_text_fit(T_F14, T_DIM, x + TS(12), y + TS(26), w - TS(24), t->title);
+    d_text(T_F12, T_DIM, LV_OPA_COVER, x + TS(12), y + TS(46), 0, "тип не поддерживается");
 }
 
 static void tile_draw_cb(lv_event_t *e)
@@ -454,13 +492,13 @@ static void tile_draw_cb(lv_event_t *e)
     switch (t->type) {
     case T_SWITCH: draw_switch(t, x, y, w, h); break;
     case T_DIMMER:
-        if (h >= 100) draw_light_sq(t, x, y, w, h);
+        if (h >= 100 * s_scale) draw_light_sq(t, x, y, w, h);
         else draw_light_strip(t, x, y, w, h);
         break;
     case T_SCENE: draw_scene(t, x, y, w, h); break;
     case T_SENSOR: draw_sensor(t, x, y, w, h); break;
     case T_INFO: draw_info(t, x, y, w, h); break;
-    case T_CHART: chart_draw_tile(t->chart, x, y, w, h, t->pressed); break;
+    case T_CHART: chart_draw_tile(t->chart, x, y, w, h, t->pressed, s_scale); break;
     default: draw_unknown(t, x, y, w, h); break;
     }
 }
@@ -518,7 +556,7 @@ static void drag(tile_t *t, lv_point_t p, bool final)
 {
     int dx = p.x - t->p0.x, dy = p.y - t->p0.y;
     int w = lv_obj_get_width(t->card), h = lv_obj_get_height(t->card);
-    bool strip = h < 100;
+    bool strip = h < 100 * s_scale;
     if (!t->dragging) {
         if (abs(dx) < DRAG_SLOP && abs(dy) < DRAG_SLOP) return;
         t->dragging = t->dragged = true;
@@ -589,8 +627,13 @@ static void tile_touch_cb(lv_event_t *e)
 }
 
 // ------------------------------------------------------------ build
-static int tile_w(const tile_t *t) { return t->w * COL_W + (t->w - 1) * GAP; }
-static int tile_h(const tile_t *t) { return t->hh * ROW_H + (t->hh - 1) * GAP; }
+static int tile_span(int cells, int base)
+{
+    return (cells * base + (cells - 2) * s_gap) / 2;
+}
+
+static int tile_w(const tile_t *t) { return tile_span(t->w_cells, s_col_w); }
+static int tile_h(const tile_t *t) { return tile_span(t->h_cells, s_row_h); }
 
 static void build_tile(lv_obj_t *page, tile_t *t)
 {
@@ -629,8 +672,9 @@ static void parse_tile(tile_t *t, const cJSON *o)
     t->temp_min = jint(o, "temp_min", 0);
     t->temp_max = jint(o, "temp_max", 100);
     t->tmp = (t->temp_min + t->temp_max) / 2;
-    // Ширина в колонках (1-3). Диммер по умолчанию на всю ширину.
-    t->w = clampi(jint(o, "w", t->type == T_DIMMER ? 3 : 1), 1, 3);
+    // Дробные размеры хранятся в полуединицах, без потери шага 0,5.
+    int def_w = t->type == T_DIMMER ? s_cols * 2 : 2;
+    t->w_cells = clampi(jcells(o, "w", def_w), 1, s_cols * 2);
     const cJSON *inv = cJSON_GetObjectItem(o, "invert");
     t->invert = cJSON_IsTrue(inv);
     t->light = t->temp != NULL || cJSON_IsTrue(cJSON_GetObjectItem(o, "light"));
@@ -670,11 +714,10 @@ static void parse_tile(tile_t *t, const cJSON *o)
     // Высота: h в рядах (0.5 - полряда). По умолчанию квадрат у ленты и
     // диммера в одну колонку и у сводки с данными, остальные - в полряда.
     int def = 1;
-    if (t->type == T_DIMMER && t->w == 1) def = 2;
+    if (t->type == T_DIMMER && t->w_cells == 2) def = 2;
     if (t->type == T_INFO && (t->value || t->pad || t->nlines)) def = 2;
     if (t->type == T_CHART) def = 2;
-    const cJSON *hj = cJSON_GetObjectItem(o, "h");
-    t->hh = cJSON_IsNumber(hj) ? clampi((int)lroundf(hj->valuedouble * 2), 1, 4) : def;
+    t->h_cells = clampi(jcells(o, "h", def), 1, 4);
 }
 
 // Вкладки: страница видна одна, переключение - нажатием на вкладку.
@@ -703,10 +746,10 @@ static lv_obj_t *new_page(lv_obj_t *content)
     lv_obj_set_style_border_width(page, 0, 0);
     lv_obj_set_style_radius(page, 0, 0);
     lv_obj_set_flex_flow(page, LV_FLEX_FLOW_ROW_WRAP);
-    lv_obj_set_style_pad_hor(page, 12, 0);
-    lv_obj_set_style_pad_top(page, 4, 0);
-    lv_obj_set_style_pad_bottom(page, 16, 0);
-    lv_obj_set_style_pad_gap(page, GAP, 0);
+    lv_obj_set_style_pad_hor(page, TS(BASE_PAGE_PAD_X), 0);
+    lv_obj_set_style_pad_top(page, TS(BASE_PAGE_PAD_TOP), 0);
+    lv_obj_set_style_pad_bottom(page, TS(BASE_PAGE_PAD_BOTTOM), 0);
+    lv_obj_set_style_pad_gap(page, s_gap, 0);
     lv_obj_set_scrollbar_mode(page, LV_SCROLLBAR_MODE_OFF);
     lv_obj_set_scroll_dir(page, LV_DIR_VER);
     return page;
@@ -740,6 +783,20 @@ void tiles_build(void *content_obj, void *tabbar_obj, const char *json)
         cJSON_Delete(root);
         return;
     }
+
+    // Размеры content ещё могут не пройти компоновку LVGL после создания.
+    lv_obj_update_layout(content);
+    s_cols = clampi(jint(root, "cols", 3), 1, MAX_COLS);
+    s_scale = 3.0f / s_cols;
+    s_gap = TS(BASE_GAP);
+    if (s_gap < 1) s_gap = 1;
+    int page_pad_x = TS(BASE_PAGE_PAD_X);
+    int available_w = lv_obj_get_width(content) - 2 * page_pad_x - (s_cols - 1) * s_gap;
+    s_col_w = available_w / s_cols;
+    // Полуединицы должны быть целыми: иначе две половинки могут не поместиться.
+    if ((s_col_w - s_gap) & 1) s_col_w--;
+    s_row_h = s_col_w;
+    tile_fonts_set(s_scale);
 
     int total = 0;
     const cJSON *pg;

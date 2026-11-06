@@ -270,7 +270,7 @@ static void value_text(const chart_series_t *s, char *buf, size_t size)
 }
 
 static void draw_curve(const chart_series_t *s, const chart_scale_t *scale,
-                       int x, int y, int w, int h, bool dots)
+                       int x, int y, int w, int h, bool dots, float size_scale)
 {
     if (s->count < 2 || w < 2 || h < 2) return;
     float lo = scale->lo, hi = scale->hi;
@@ -286,24 +286,29 @@ static void draw_curve(const chart_series_t *s, const chart_scale_t *scale,
         if (fy > 1) fy = 1;
         int nx = x + (int)lroundf(fx * (w - 1));
         int ny = y + h - 1 - (int)lroundf(fy * (h - 1));
-        if (i) d_line(px, py, nx, ny, dots ? 2.6f : 1.8f, s->color, LV_OPA_COVER);
+        if (i) d_line(px, py, nx, ny, (dots ? 2.6f : 1.8f) * size_scale, s->color, LV_OPA_COVER);
         px = nx;
         py = ny;
     }
     if (dots) {
-        d_circle(px, py, 4.2f, CHART_BG2, LV_OPA_COVER);
-        d_circle(px, py, 2.6f, s->color, LV_OPA_COVER);
+        d_circle(px, py, 4.2f * size_scale, CHART_BG2, LV_OPA_COVER);
+        d_circle(px, py, 2.6f * size_scale, s->color, LV_OPA_COVER);
     }
 }
 
-static void draw_time_grid(const chart_t *c, int x, int y, int w, int h, bool labels);
+static void draw_time_grid(const chart_t *c, int x, int y, int w, int h, bool labels,
+                           const lv_font_t *font, float size_scale);
+static int chart_px(float scale, int v) { return (int)lroundf(v * scale); }
 
-void chart_draw_tile(const chart_t *c, int x, int y, int w, int h, bool pressed)
+void chart_draw_tile(const chart_t *c, int x, int y, int w, int h, bool pressed, float scale)
 {
-    d_vgrad(x, y, w, h, 14, CHART_BG1, LV_OPA_COVER, CHART_BG2, LV_OPA_COVER);
-    d_border(x, y, w, h, 14, 1, CHART_EDGE, LV_OPA_COVER);
-    if (pressed) d_rect(x, y, w, h, 14, 0xFFFFFF, 18);
-    d_text(F12, CHART_DIM, LV_OPA_COVER, x + 12, y + 18, 0, c->title);
+    const lv_font_t *small = tile_font(false, 12);
+    int radius = chart_px(scale, 14);
+    int pad = chart_px(scale, 12);
+    d_vgrad(x, y, w, h, radius, CHART_BG1, LV_OPA_COVER, CHART_BG2, LV_OPA_COVER);
+    d_border(x, y, w, h, radius, chart_px(scale, 1), CHART_EDGE, LV_OPA_COVER);
+    if (pressed) d_rect(x, y, w, h, radius, 0xFFFFFF, 18);
+    d_text(small, CHART_DIM, LV_OPA_COVER, x + pad, y + chart_px(scale, 18), 0, c->title);
 
     // В шапке видны все текущие значения, а не только первая серия.
     // Как в wb-svg-panel, цвет и необязательное имя связывают число с линией.
@@ -316,31 +321,31 @@ void chart_draw_tile(const chart_t *c, int x, int y, int w, int h, bool pressed)
         snprintf(b, sizeof(b), "%s%s%s%s%s", prefix, prefix[0] ? " " : "", value,
                  s->unit && s->unit[0] && s->has_current ? " " : "",
                  s->unit && s->has_current ? s->unit : "");
-        d_text(i ? F17 : F22S, s->color, LV_OPA_COVER,
-               x + w - 12, y + 40 + i * 23, 2, b);
+        d_text(i ? tile_font(true, 17) : tile_font(true, 21), s->color, LV_OPA_COVER,
+               x + w - pad, y + chart_px(scale, 40 + i * 23), 2, b);
     }
 
-    bool detailed = h >= 160;
-    int top = h >= 100 ? 62 + (c->nseries - 1) * 23 : 30;
-    int bottom = detailed ? 34 : 10;
-    int px = x + 12, py = y + top, pw = w - 24, ph = h - top - bottom;
-    if (ph < 18 || pw < 20) return;
+    bool detailed = h >= 160 * scale;
+    int top = chart_px(scale, h >= 100 * scale ? 62 + (c->nseries - 1) * 23 : 30);
+    int bottom = chart_px(scale, detailed ? 34 : 10);
+    int px = x + pad, py = y + top, pw = w - 2 * pad, ph = h - top - bottom;
+    if (ph < chart_px(scale, 18) || pw < chart_px(scale, 20)) return;
     bool any = false;
     for (int i = 0; i < c->nseries; i++) if (c->series[i].count > 1) any = true;
     if (!any) {
-        d_text(F12, CHART_DIM, LV_OPA_COVER, px, py + 18, 0, "Нет истории");
+        d_text(small, CHART_DIM, LV_OPA_COVER, px, py + chart_px(scale, 18), 0, "Нет истории");
         return;
     }
     chart_scale_t scales[CHART_MAX_SERIES];
     int divisions = chart_scales(c, scales);
     for (int i = 0; i <= divisions; i++) {
         int gy = py + i * (ph - 1) / divisions;
-        d_line(px, gy, px + pw - 1, gy, i == divisions ? 1.0f : 0.7f,
+        d_line(px, gy, px + pw - 1, gy, (i == divisions ? 1.0f : 0.7f) * scale,
                CHART_GRID, i == divisions ? 110 : 65);
     }
-    draw_time_grid(c, px, py, pw, ph, detailed);
+    draw_time_grid(c, px, py, pw, ph, detailed, small, scale);
     for (int i = 0; i < c->nseries; i++)
-        draw_curve(&c->series[i], &scales[i], px, py, pw, ph, false);
+        draw_curve(&c->series[i], &scales[i], px, py, pw, ph, false, scale);
     if (!detailed) return;
 
     // Подписи внутри краёв графика повторяют раскладку wb-svg-panel:
@@ -351,12 +356,14 @@ void chart_draw_tile(const chart_t *c, int x, int y, int w, int h, bool pressed)
         if (c->series[0].count > 1) {
             snprintf(b, sizeof(b), "%.*f", scale_digits(scales[0].step),
                      scales[0].lo + (scales[0].hi - scales[0].lo) * f);
-            d_text(F12, c->series[0].color, LV_OPA_COVER, px + 5, gy + 4, 0, b);
+            d_text(small, c->series[0].color, LV_OPA_COVER,
+                   px + chart_px(scale, 5), gy + chart_px(scale, 4), 0, b);
         }
         if (c->nseries > 1 && c->series[1].count > 1) {
             snprintf(b, sizeof(b), "%.*f", scale_digits(scales[1].step),
                      scales[1].lo + (scales[1].hi - scales[1].lo) * f);
-            d_text(F12, c->series[1].color, LV_OPA_COVER, px + pw - 5, gy + 4, 2, b);
+            d_text(small, c->series[1].color, LV_OPA_COVER,
+                   px + pw - chart_px(scale, 5), gy + chart_px(scale, 4), 2, b);
         }
     }
 }
@@ -369,7 +376,8 @@ static void range_text(int seconds, char *buf, size_t size)
     else snprintf(buf, size, "%d с", seconds);
 }
 
-static void draw_time_grid(const chart_t *c, int x, int y, int w, int h, bool labels)
+static void draw_time_grid(const chart_t *c, int x, int y, int w, int h, bool labels,
+                           const lv_font_t *font, float size_scale)
 {
     const chart_series_t *source = NULL;
     for (int i = 0; i < c->nseries; i++) {
@@ -399,12 +407,14 @@ static void draw_time_grid(const chart_t *c, int x, int y, int w, int h, bool la
         localtime_r(&stamp, &tm);
         if (tm.tm_hour % step_h) continue;
         int px = x + (int)lround(((double)stamp - first) / (last - first) * (w - 1));
-        if (px <= x + 3 || px >= x + w - 3) continue;
-        d_line(px, y, px, y + h - 1, 0.8f, CHART_GRID, 55);
+        int edge = chart_px(size_scale, 3);
+        if (px <= x + edge || px >= x + w - edge) continue;
+        d_line(px, y, px, y + h - 1, 0.8f * size_scale, CHART_GRID, 55);
         if (labels) {
             char b[8];
             snprintf(b, sizeof(b), "%02d", tm.tm_hour);
-            d_text(F12, CHART_DIM, LV_OPA_COVER, px, y + h + 27, 1, b);
+            d_text(font, CHART_DIM, LV_OPA_COVER, px,
+                   y + h + chart_px(size_scale, 27), 1, b);
         }
     }
 }
@@ -452,9 +462,9 @@ static void chart_draw_full(lv_event_t *e)
         d_line(x, gy, x + w - 1, gy, edge ? 1.1f : 0.8f,
                CHART_GRID, edge ? 130 : 70);
     }
-    draw_time_grid(c, x, y, w, h, true);
+    draw_time_grid(c, x, y, w, h, true, F12, 1);
     for (int i = 0; i < c->nseries; i++)
-        draw_curve(&c->series[i], &scales[i], x, y, w, h, true);
+        draw_curve(&c->series[i], &scales[i], x, y, w, h, true, 1);
 
     // Первая серия подписана слева, вторая — справа; цвет связывает
     // числа шкалы с линией. Как в wb-svg-panel, точность зависит от шага.

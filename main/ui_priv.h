@@ -26,8 +26,12 @@ void pad_topics(const pad_t *p, void (*cb)(const char *topic, void *ctx), void *
 bool pad_on_value(pad_t *p, const char *topic, const char *value);   // true - сменилось питание
 bool pad_power(const pad_t *p, bool *on);                             // false - питание неизвестно
 void pad_open(pad_t *p);
-bool pad_tile(const pad_t *p, int x, int y, int w, int h, uint32_t page_bg);   // вид плитки, false - не умеет
+bool pad_tile(const pad_t *p, int x, int y, int w, int h, uint32_t page_bg, float scale);   // вид плитки, false - не умеет
 bool pad_active(const pad_t *p);                                      // включён / штора открыта
+
+// Шрифты только для содержимого плиток; полноэкранные экраны используют F*/f*.
+void tile_fonts_set(float scale);
+lv_font_t *tile_font(bool bold, int base_px);
 
 // Графики (charts.c): поле "series" у плитки chart, история - отдельным JSON.
 typedef struct chart chart_t;
@@ -38,7 +42,7 @@ bool chart_history_json(chart_t *c, const char *json);
 const char *chart_history_path(const chart_t *c);
 int charts_count(void);
 chart_t *charts_at(int index);
-void chart_draw_tile(const chart_t *c, int x, int y, int w, int h, bool pressed);
+void chart_draw_tile(const chart_t *c, int x, int y, int w, int h, bool pressed, float scale);
 void chart_open(chart_t *c);
 void chart_redraw_open(void);
 

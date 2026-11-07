@@ -145,15 +145,17 @@ static const char *IC_FAN = "M12 9.9C12 6.4 9.6 3.5 12 3.5s4.4 2.2 2.2 4.6M14.1 
     "M12 14.1c0 3.5 2.4 6.4 0 6.4s-4.4-2.2-2.2-4.6M9.9 12c-3.5 0-6.4 2.4-6.4 0s2.2-4.4 4.6-2.2";
 static const char *IC_POWER = "M12 3.5v8M7.2 6.6a7.2 7.2 0 1 0 9.6 0";
 static const char *IC_BACK = "M15 5l-7 7 7 7";
+static const char *IC_UNDO = "M9 7L5 11l4 4M5 11h9a5 5 0 0 1 0 10h-3";
 static const char *IC_CHEV_U = "M6 15l6-6 6 6";
 static const char *IC_CHEV_D = "M6 9l6 6 6-6";
 static const char *IC_CHEV_L = "M15 6l-6 6 6 6";
 static const char *IC_CHEV_R = "M9 6l6 6-6 6";
 static const char *IC_REW = "M19 6l-8 6 8 6M11 6l-8 6 8 6";
 static const char *IC_FWD = "M5 6l8 6-8 6M13 6l8 6-8 6";
-static const char *IC_PLAY = "M8 5.5l10 6.5-10 6.5z M20 6.5v11";
+static const char *IC_PLAY = "M3 5l8.5 7L3 19z M14.5 5h2.5v14h-2.5z M19.5 5H22v14h-2.5z";
 static const char *IC_VOL = "M4 9.5v5h3.6l4.9 4V5.5l-4.9 4H4z";
 static const char *IC_VOL_X = "M15.5 9.5l5 5M20.5 9.5l-5 5";
+static const char *IC_MUTE = "M11 5L7 9H4v6h3l4 4z M16 9l5 6M21 9l-5 6";
 static const char *IC_SRC = "M3.5 5.5h17v10h-17z M12 15.5v4.5M8 20h8";
 
 // Клавиши телевизора: имена контролов моста wb-tv (с 0.11). Нажатие
@@ -1396,10 +1398,62 @@ static void draw_light(pad_t *p)
 // ---- телевизор (с 0.11)
 static void tv_btn(int x, int y, int r, int key, const char *icon, const char *txt)
 {
-    d_circle(x, y, r, pressed(Z_KEY, key) ? 0x4A4B50 : K_PILL, LV_OPA_COVER);
+    d_circle(x, y + 2, r, 0x000000, 70);
+    d_circle(x, y, r, pressed(Z_KEY, key) ? 0x4A4B50 : 0x35363B, LV_OPA_COVER);
+    d_border(x - r, y - r, 2 * r, 2 * r, LV_RADIUS_CIRCLE, 1, 0xFFFFFF, 18);
     if (icon) d_icon(icon, x, y, r * 1.15f, 2.4f, K_INK, LV_OPA_COVER);
     else if (txt) d_text(F22S, K_INK, LV_OPA_COVER, x, y + 8, 1, txt);
     zone(x - r - 4, y - r - 4, x + r + 4, y + r + 4, Z_KEY, key);
+}
+
+// Залитый треугольник на колесе, как в static/js/pads-media.js у WB.
+static void tv_triangle(float cx, float cy, int key, float size)
+{
+    float ux = key == TK_RIGHT ? 1 : key == TK_LEFT ? -1 : 0;
+    float uy = key == TK_DOWN ? 1 : key == TK_UP ? -1 : 0;
+    float vx = -uy, vy = ux;
+    lv_draw_triangle_dsc_t d;
+    lv_draw_triangle_dsc_init(&d);
+    d.bg_color = lv_color_hex(K_INK);
+    d.bg_opa = pressed(Z_KEY, key) ? 110 : 235;
+    d.p[0].x = lroundf(cx + ux * size);
+    d.p[0].y = lroundf(cy + uy * size);
+    d.p[1].x = lroundf(cx - ux * size * 0.65f + vx * size * 0.85f);
+    d.p[1].y = lroundf(cy - uy * size * 0.65f + vy * size * 0.85f);
+    d.p[2].x = lroundf(cx - ux * size * 0.65f - vx * size * 0.85f);
+    d.p[2].y = lroundf(cy - uy * size * 0.65f - vy * size * 0.85f);
+    lv_draw_triangle(L, &d);
+}
+
+// Зубчатое колесо WB: тёмные радиальные зубья, серый диск, оранжевая OK.
+static void tv_wheel(int cx, int cy, int r)
+{
+    d_circle(cx, cy + 3, r + 5, 0x000000, 80);
+    for (int i = 0; i < 28; i++) {
+        float a = 2.0f * (float)M_PI * i / 28.0f;
+        float ca = cosf(a), sa = sinf(a);
+        d_line(cx + ca * (r - 3), cy + sa * (r - 3),
+               cx + ca * (r + 4), cy + sa * (r + 4), 5, K_BG2, LV_OPA_COVER);
+    }
+    d_circle(cx, cy, r - 2, 0x3A3B40, LV_OPA_COVER);
+    d_border(cx - r + 3, cy - r + 3, 2 * (r - 3), 2 * (r - 3),
+             LV_RADIUS_CIRCLE, 1, 0xFFFFFF, 22);
+    d_arc(cx, cy, r - 6, 2, 195, 335, 0xFFFFFF, 24);
+
+    float ar = r * 0.69f;
+    tv_triangle(cx, cy - ar, TK_UP, 10);
+    tv_triangle(cx + ar, cy, TK_RIGHT, 10);
+    tv_triangle(cx, cy + ar, TK_DOWN, 10);
+    tv_triangle(cx - ar, cy, TK_LEFT, 10);
+    zone(cx - 35, cy - r - 5, cx + 35, cy - 39, Z_KEY, TK_UP);
+    zone(cx - 35, cy + 39, cx + 35, cy + r + 5, Z_KEY, TK_DOWN);
+    zone(cx - r - 5, cy - 35, cx - 39, cy + 35, Z_KEY, TK_LEFT);
+    zone(cx + 39, cy - 35, cx + r + 5, cy + 35, Z_KEY, TK_RIGHT);
+
+    d_circle(cx, cy + 3, 36, 0x000000, 75);
+    d_circle(cx, cy, 32, pressed(Z_KEY, TK_OK) ? 0xD88C2C : K_ACTIVE, LV_OPA_COVER);
+    d_text(F22S, K_ACT_INK, LV_OPA_COVER, cx, cy + 8, 1, "OK");
+    zone(cx - 36, cy - 36, cx + 36, cy + 36, Z_KEY, TK_OK);
 }
 
 static void draw_tv(pad_t *p)
@@ -1416,48 +1470,48 @@ static void draw_tv(pad_t *p)
     }
     d_text_ellipsize(F13, on ? K_ACTIVE : K_DIM, 240, 90, 1, 400, b);
 
-    // приложения чипами сверху: ряд всегда по центру (не более двух рядов)
-    if (p->napps) {
-        int per = p->napps > 4 ? 4 : p->napps;
-        int rows = (p->napps + per - 1) / per;
-        if (rows > 2) { rows = 2; per = 4; }
-        int bw = (432 - (per - 1) * 10) / per;
-        for (int i = 0; i < p->napps && i < 8; i++) {
-            int r = i / per, c = i % per;
-            int in_row = r == rows - 1 ? p->napps - r * per : per;
-            int row_w = in_row * bw + (in_row - 1) * 10;
-            int x = 240 - row_w / 2 + c * (bw + 10), y = 104 + r * 50;
-            d_rect(x, y, bw, 42, 14, pressed(Z_APP, i) ? 0x3A3B40 : K_CHIP, LV_OPA_COVER);
-            zone(x - 2, y - 2, x + bw + 2, y + 44, Z_APP, i);
-            d_text_ellipsize(F13, K_INK, x + bw / 2, y + 27, 1, bw - 14,
-                             p->apps[i].title ? p->apps[i].title : "");
+    // Приложения — отдельным вертикальным рядом слева. До восьми кнопок
+    // помещаются без прокрутки и не пересекаются с основным пультом.
+    int napps = p->napps < MAX_APPS ? p->napps : MAX_APPS;
+    if (napps) {
+        const int x = 12, w = 126, top = 104, bottom = 464;
+        int slot = (bottom - top) / napps;
+        int bh = slot - 6;
+        if (bh > 46) bh = 46;
+        for (int i = 0; i < napps; i++) {
+            int y = top + i * slot;
+            const char *title = p->apps[i].title ? p->apps[i].title : "";
+            bool now = p->app_now[0] && !strcmp(p->app_now, title);
+            uint32_t bg = now ? K_ACTIVE : pressed(Z_APP, i) ? 0x3A3B40 : K_CHIP;
+            d_rect(x, y, w, bh, bh / 2, bg, LV_OPA_COVER);
+            zone(x, y - 2, x + w, y + bh + 2, Z_APP, i);
+            d_text_ellipsize(F12, now ? K_ACT_INK : K_INK,
+                             x + w / 2, y + bh / 2 + 4, 1, w - 12, title);
         }
     }
 
-    // Отдельные зоны, как на обычном ТВ-пульте: медиа, затем служебные
-    // клавиши, ниже крестовина слева и громкость справа. Даже второй ряд
-    // приложений заканчивается на y=196 и не пересекается с медиа.
-    tv_btn(180, 226, 20, TK_REW, IC_REW, NULL);
-    tv_btn(240, 226, 20, TK_PLAY, IC_PLAY, NULL);
-    tv_btn(300, 226, 20, TK_FWD, IC_FWD, NULL);
-    tv_btn(180, 272, 20, TK_BACK, IC_BACK, NULL);
-    tv_btn(240, 272, 20, TK_SOURCE, IC_SRC, NULL);
-    tv_btn(300, 272, 20, TK_HOME, icon_path("home"), NULL);
+    // Справа — компоновка штатного пульта WB: колесо, под ним «Назад» и
+    // «Меню», медиа-ряд и широкая плашка громкости.
+    tv_wheel(312, 198, 80);
+    tv_btn(202, 306, 23, TK_BACK, IC_UNDO, NULL);
+    tv_btn(422, 306, 23, TK_HOME, "M5 5h5v5H5zM14 5h5v5h-5zM5 14h5v5H5zM14 14h5v5h-5z", NULL);
+    d_text(F12, K_DIM, LV_OPA_COVER, 202, 341, 1, "Назад");
+    d_text(F12, K_DIM, LV_OPA_COVER, 422, 341, 1, "Меню");
 
-    const int cx = 168, cy = 384, d = 56;
-    tv_btn(cx, cy - d, 25, TK_UP, IC_CHEV_U, NULL);
-    tv_btn(cx, cy + d, 25, TK_DOWN, IC_CHEV_D, NULL);
-    tv_btn(cx - d, cy, 25, TK_LEFT, IC_CHEV_L, NULL);
-    tv_btn(cx + d, cy, 25, TK_RIGHT, IC_CHEV_R, NULL);
-    d_circle(cx, cy, 34, pressed(Z_KEY, TK_OK) ? 0x4A4B50 : 0x3A3B40, LV_OPA_COVER);
-    d_text(F17, K_INK, LV_OPA_COVER, cx, cy + 6, 1, "OK");
-    zone(cx - 37, cy - 37, cx + 37, cy + 37, Z_KEY, TK_OK);
+    tv_btn(232, 366, 21, TK_REW, IC_REW, NULL);
+    tv_btn(312, 366, 21, TK_PLAY, IC_PLAY, NULL);
+    tv_btn(392, 366, 21, TK_FWD, IC_FWD, NULL);
 
-    const int vx = 352;
-    d_icon(IC_VOL, vx, 288, 20, 2, K_DIM, LV_OPA_COVER);
-    tv_btn(vx, 322, 25, TK_VOL_UP, NULL, "+");
-    tv_btn(vx, 384, 25, TK_MUTE, IC_VOL_X, NULL);
-    tv_btn(vx, 446, 25, TK_VOL_DOWN, NULL, "-");
+    d_rect(160, 412, 304, 54, 27, K_CHIP, LV_OPA_COVER);
+    zone(160, 408, 278, 470, Z_KEY, TK_VOL_DOWN);
+    zone(346, 408, 464, 470, Z_KEY, TK_VOL_UP);
+    d_text(F22S, K_INK, LV_OPA_COVER, 218, 437, 1, "−");
+    d_text(F12, K_DIM, LV_OPA_COVER, 218, 456, 1, "тише");
+    d_text(F22S, K_INK, LV_OPA_COVER, 406, 437, 1, "+");
+    d_text(F12, K_DIM, LV_OPA_COVER, 406, 456, 1, "громче");
+    tv_btn(312, 439, 22, TK_MUTE, IC_MUTE, NULL);
+
+    tv_btn(384, 36, 22, TK_SOURCE, IC_SRC, NULL);
     d_head(p, p->power_cmd != NULL, on);
 }
 
@@ -1543,8 +1597,12 @@ static bool forecast_graph(const pad_t *p, float X0, float X1, float Y0, float Y
         float v = grid_lo + (grid_hi - grid_lo) * i / divisions;
         float yy = Y1 - (Y1 - Y0) * i / divisions;
         d_line(X0, yy, X1, yy, scale, K_INK, i == 0 || i == divisions ? 60 : 30);
-        snprintf(b, sizeof(b), "%.0f°", v);
-        d_text(font, K_DIM, LV_OPA_COVER, X0 - 6 * scale, yy + 4 * scale, 2, b);
+        if (compact) snprintf(b, sizeof(b), "%.0f", v);
+        else snprintf(b, sizeof(b), "%.0f°", v);
+        if (compact)
+            d_text(font, 0x6FA8CF, LV_OPA_COVER, X0 + 5 * scale, yy - 2 * scale, 0, b);
+        else
+            d_text(font, K_DIM, LV_OPA_COVER, X0 - 6 * scale, yy + 4 * scale, 2, b);
     }
 
     float xstep = (X1 - X0) / (n - 1);
@@ -1555,8 +1613,10 @@ static bool forecast_graph(const pad_t *p, float X0, float X1, float Y0, float Y
             float xx = X0 + xstep * i;
             float ww = xstep * step;
             if (xx + ww > X1) ww = X1 - xx;
-            lv_opa_t op = (lv_opa_t)(15 + 70 * clampf(p->s_cloud[i] / 100.0f, 0, 1));
-            d_rect(xx, Y0, ww, Y1 - Y0, 0, K_INK, op);
+            // Как в WB: облачность только внутри полосы графика и не более
+            // 36% непрозрачности. Сплошной светлый фон на всю плитку убран.
+            lv_opa_t op = (lv_opa_t)(15 + 77 * clampf(p->s_cloud[i] / 100.0f, 0, 1));
+            d_rect(xx, Y0, ww, Y1 - Y0, 0, 0x8A9AAE, op);
         }
     }
     for (int i = 0; i < n; i++) {
@@ -1586,7 +1646,9 @@ static bool forecast_graph(const pad_t *p, float X0, float X1, float Y0, float Y
         if (i == imin || i == imax) d_circle(xx, yy, 3.2f * scale, 0x3B8FD4, LV_OPA_COVER);
         prevx = xx; prevy = yy;
     }
-    if (imin != imax) {
+    // На компактной плитке экстремумы обозначены только точками, как в WB:
+    // числовые подписи здесь наезжали на текущую температуру и описание.
+    if (!compact && imin != imax) {
         for (int k = 0; k < 2; k++) {
             int i = k ? imax : imin;
             float xx = X0 + xstep * i;
@@ -1599,15 +1661,18 @@ static bool forecast_graph(const pad_t *p, float X0, float X1, float Y0, float Y
     if (p->n_code > 0) {
         int step = n > (compact ? 5 : 8) ? (n - 1) / (compact ? 4 : 7) : 1;
         for (int i = 0; i < p->n_code && i < n; i += step)
-            wmo_weather_icon(p->s_code[i], X0 + xstep * i, Y0 + (compact ? 42.0f : 20.0f) * scale,
+            wmo_weather_icon(p->s_code[i], X0 + xstep * i, Y0 + (compact ? 9.0f : 20.0f) * scale,
                              (compact ? 7.0f : 12.0f) * scale, K_DIM);
     }
     for (int i = 0; i < n; i++) {
         int hh = p->start_hour >= 0 ? (p->start_hour + i) % 24 : i;
         float xx = X0 + xstep * i;
-        if (hh % 6 == 0 && xx < X1 - 22 * scale) {
-            snprintf(b, sizeof(b), "%02d:00", hh);
-            d_text(font, K_DIM, LV_OPA_COVER, xx, Y1 + 17 * scale, 1, b);
+        if (hh % 6 == 0 && xx < X1 - 22 * scale &&
+            (!compact || xx > X0 + 30 * scale)) {
+            if (compact) snprintf(b, sizeof(b), "%02d", hh);
+            else snprintf(b, sizeof(b), "%02d:00", hh);
+            d_text(font, K_DIM, LV_OPA_COVER, xx,
+                   Y1 + (compact ? -2.0f : 17.0f) * scale, 1, b);
         }
     }
     return true;
@@ -2501,8 +2566,9 @@ static void tile_leak(const pad_t *p, int x, int y, int w, int h)
     upcase(b, sizeof(b), p->title ? p->title : "");
     uint32_t col = p->alarm_on || wet ? LEAK_RED : LEAK_GREEN;
 
-    // Половинная высота (h:0.5): датчики занимают равные колонки
-    // в одной горизонтальной строке. Цвет точки и подписи показывает состояние.
+    // Половинная высота (h:0.5): датчики занимают верхнюю строку, а слева
+    // снизу остаётся обычное название плитки с каплей. Так это не набор
+    // безымянных точек, а именно блок протечек.
     if (h < PS(96) && p->nsensors) {
         int n = p->nsensors;
         int cw = w / n;
@@ -2513,12 +2579,17 @@ static void tile_leak(const pad_t *p, int x, int y, int w, int h)
             int cx = x + i * cw;
             bool wet = p->sensors[i].wet;
             uint32_t col = wet ? LEAK_RED : LEAK_GREEN;
-            d_circle(cx + PS(11), y + h / 2.0f, PS(3), col, LV_OPA_COVER);
+            float cy = y + h * 0.30f;
+            d_circle(cx + PS(11), cy, PS(3), col, LV_OPA_COVER);
             d_text_ellipsize(P_F12, wet ? LEAK_RED : K_INK,
-                             cx + PS(20), y + h / 2.0f + PS(4), 0,
+                             cx + PS(20), cy + PS(4), 0,
                              cw - PS(24), p->sensors[i].title ? p->sensors[i].title : "?");
-            if (i) d_line(cx, y + PS(10), cx, y + h - PS(10), PL(1), K_INK, 24);
+            if (i) d_line(cx, y + PS(4), cx, y + h * 0.58f, PL(1), K_INK, 24);
         }
+        d_icon(icon_path("leak"), x + PS(13), y + h - PS(13),
+               PS(13), 1.5f * s_tile_scale, col, LV_OPA_COVER);
+        d_text_ellipsize(P_F12, K_DIM, x + PS(25), y + h - PS(6), 0,
+                         w - PS(31), p->title ? p->title : "Протечки");
         if (clipped) L->_clip_area = clip_old;
         return;
     }
@@ -2564,7 +2635,10 @@ static void tile_weather(const pad_t *p, int x, int y, int w, int h)
     if (clipped) L->_clip_area = cl;
 
     if (h >= PS(90))
-        forecast_graph(p, x + PS(34), x + w - PS(8), y + PS(6), y + h - PS(44),
+        // Пропорции forecast WB: кривая живёт между 40% и 82% высоты.
+        // Верх остаётся текущей погоде, низ — часам и названию плитки.
+        forecast_graph(p, x + PS(3), x + w - PS(3),
+                       y + h * 0.40f, y + h * 0.82f,
                        P_F12, s_tile_scale, true);
 
     int hour = ui_hour_now();

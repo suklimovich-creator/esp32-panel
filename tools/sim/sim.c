@@ -29,6 +29,8 @@ struct camera {
     uint8_t *pixels;
     bool has_stream;
 };
+static int sim_camera_page = -1;
+static bool sim_camera_visible;
 camera_t *camera_tile_create(lv_obj_t *card, const char *title, const char *snapshot,
                              const char *stream, int page, int w, int h, float scale)
 {
@@ -69,8 +71,8 @@ camera_t *camera_tile_create(lv_obj_t *card, const char *title, const char *snap
     lv_obj_t *bar = lv_obj_create(card);
     lv_obj_set_size(bar, w, bar_h);
     lv_obj_align(bar, LV_ALIGN_BOTTOM_MID, 0, 0);
-    lv_obj_set_style_bg_color(bar, lv_color_hex(0), 0);
-    lv_obj_set_style_bg_opa(bar, LV_OPA_50, 0);
+    lv_obj_set_style_bg_color(bar, lv_color_hex(0x1C1D20), 0);
+    lv_obj_set_style_bg_opa(bar, LV_OPA_COVER, 0);
     lv_obj_set_style_border_width(bar, 0, 0);
     lv_obj_set_style_pad_all(bar, 0, 0);
     lv_obj_t *label = ui_label(card, tile_font(false, 15), C_TEXT, title);
@@ -79,8 +81,8 @@ camera_t *camera_tile_create(lv_obj_t *card, const char *title, const char *snap
 }
 void camera_open(camera_t *c) { (void)c; }
 void camera_close(void) {}
-void camera_page_visible(int page) { (void)page; }
-void camera_main_visible(bool visible) { (void)visible; }
+void camera_page_visible(int page) { sim_camera_page = page; }
+void camera_main_visible(bool visible) { sim_camera_visible = visible; }
 void camera_reset(void) {}
 #include "../../main/tiles.c"
 
@@ -110,8 +112,10 @@ int main(int argc, char **argv)
     f22 = ttf(true, 20);
     f28b = ttf(true, 28);
     if (!strcmp(argv[1], "--screen")) {
-        lv_obj_t *scr = lv_screen_active();
+        // Как в ui.c: главный экран строится до того, как становится активным.
+        lv_obj_t *scr = lv_obj_create(NULL);
         lv_obj_set_style_bg_color(scr, lv_color_hex(C_BG), 0);
+        lv_obj_set_style_bg_opa(scr, LV_OPA_COVER, 0);
         lv_obj_remove_flag(scr, LV_OBJ_FLAG_SCROLLABLE);
         lv_obj_t *tabbar = lv_obj_create(scr);
         lv_obj_set_size(tabbar, 330, 44);
@@ -129,6 +133,8 @@ int main(int argc, char **argv)
         lv_obj_set_style_radius(content, 0, 0);
         lv_obj_set_style_pad_all(content, 0, 0);
         tiles_build(content, tabbar, readf(argv[2]));
+        lv_screen_load(scr);
+        camera_main_visible(true);
         char line[256];
         FILE *v = fopen(argv[3], "r");
         while (v && fgets(line, sizeof(line), v)) {
@@ -146,11 +152,35 @@ int main(int argc, char **argv)
             int n = atoi(argv[9]);
             if (n >= 0 && n < s_count && s_tiles[n].pad) pad_open(s_tiles[n].pad);
         }
-        // [10] saver - показать заставку
-        if (argc > 10 && !strcmp(argv[10], "saver") && s_saver_scr) {
+        // [10] saver - показать заставку; saver-check - войти и выйти с проверкой.
+        if (argc > 10 && !strncmp(argv[10], "saver", 5) && s_saver_scr) {
+            int main_page = s_page_idx;
             s_saver_on = true;
-            saver_show(0);
             lv_screen_load(s_saver_scr);
+            saver_show(0);
+            camera_main_visible(true);
+            if (!strcmp(argv[10], "saver-check")) {
+                if (lv_screen_active() != s_saver_scr || sim_camera_page != 100 || !sim_camera_visible) {
+                    fprintf(stderr, "saver-check: неверный вход, page=%d visible=%d\n",
+                            sim_camera_page, sim_camera_visible);
+                    return 2;
+                }
+                if (s_npages2 > 1) {
+                    saver_show(1);
+                    if (sim_camera_page != 101) {
+                        fprintf(stderr, "saver-check: вторая страница камер не выбрана\n");
+                        return 3;
+                    }
+                }
+                saver_exit();
+                if (s_saver_on || lv_screen_active() != scr || s_home != scr ||
+                    s_page_idx != main_page || sim_camera_page != main_page || !sim_camera_visible) {
+                    fprintf(stderr, "saver-check: неверный возврат, page=%d home=%d visible=%d\n",
+                            sim_camera_page, s_home == scr, sim_camera_visible);
+                    return 4;
+                }
+                printf("saver-check: камеры 100/101 и возврат на страницу %d — OK\n", main_page);
+            }
         }
         lv_refr_now(d);
         lv_refr_now(d);

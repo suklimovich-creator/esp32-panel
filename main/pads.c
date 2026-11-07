@@ -146,15 +146,9 @@ static const char *IC_FAN = "M12 9.9C12 6.4 9.6 3.5 12 3.5s4.4 2.2 2.2 4.6M14.1 
 static const char *IC_POWER = "M12 3.5v8M7.2 6.6a7.2 7.2 0 1 0 9.6 0";
 static const char *IC_BACK = "M15 5l-7 7 7 7";
 static const char *IC_UNDO = "M9 7L5 11l4 4M5 11h9a5 5 0 0 1 0 10h-3";
-static const char *IC_CHEV_U = "M6 15l6-6 6 6";
-static const char *IC_CHEV_D = "M6 9l6 6 6-6";
-static const char *IC_CHEV_L = "M15 6l-6 6 6 6";
-static const char *IC_CHEV_R = "M9 6l6 6-6 6";
 static const char *IC_REW = "M19 6l-8 6 8 6M11 6l-8 6 8 6";
 static const char *IC_FWD = "M5 6l8 6-8 6M13 6l8 6-8 6";
 static const char *IC_PLAY = "M3 5l8.5 7L3 19z M14.5 5h2.5v14h-2.5z M19.5 5H22v14h-2.5z";
-static const char *IC_VOL = "M4 9.5v5h3.6l4.9 4V5.5l-4.9 4H4z";
-static const char *IC_VOL_X = "M15.5 9.5l5 5M20.5 9.5l-5 5";
 static const char *IC_MUTE = "M11 5L7 9H4v6h3l4 4z M16 9l5 6M21 9l-5 6";
 static const char *IC_SRC = "M3.5 5.5h17v10h-17z M12 15.5v4.5M8 20h8";
 
@@ -218,7 +212,8 @@ static void fonts(void)
 }
 
 static const struct { bool bold; int px; } TILE_FONTS[] = {
-    {false, 12}, {true, 13}, {false, 15}, {true, 17}, {false, 17}, {true, 21}, {true, 32}
+    {false, 12}, {true, 13}, {false, 15}, {true, 17}, {false, 17},
+    {false, 21}, {false, 26}, {true, 21}, {true, 32}
 };
 static lv_font_t *s_tile_fonts[sizeof(TILE_FONTS) / sizeof(TILE_FONTS[0])];
 
@@ -1613,9 +1608,10 @@ static bool forecast_graph(const pad_t *p, float X0, float X1, float Y0, float Y
             float xx = X0 + xstep * i;
             float ww = xstep * step;
             if (xx + ww > X1) ww = X1 - xx;
-            // Как в WB: облачность только внутри полосы графика и не более
-            // 36% непрозрачности. Сплошной светлый фон на всю плитку убран.
-            lv_opa_t op = (lv_opa_t)(15 + 77 * clampf(p->s_cloud[i] / 100.0f, 0, 1));
+            // На плитке фон приглушён сильнее: не более 26% непрозрачности,
+            // чтобы сетка и подписи оставались заметнее облачности.
+            float cloud = clampf(p->s_cloud[i] / 100.0f, 0, 1);
+            lv_opa_t op = (lv_opa_t)((compact ? 10 + 56 * cloud : 15 + 77 * cloud));
             d_rect(xx, Y0, ww, Y1 - Y0, 0, 0x8A9AAE, op);
         }
     }
@@ -2635,10 +2631,10 @@ static void tile_weather(const pad_t *p, int x, int y, int w, int h)
     if (clipped) L->_clip_area = cl;
 
     if (h >= PS(90))
-        // Пропорции forecast WB: кривая живёт между 40% и 82% высоты.
-        // Верх остаётся текущей погоде, низ — часам и названию плитки.
+        // График немного расширен по вертикали; сверху остаётся текущая
+        // погода, снизу — часы и название плитки.
         forecast_graph(p, x + PS(3), x + w - PS(3),
-                       y + h * 0.40f, y + h * 0.82f,
+                       y + h * 0.36f, y + h * 0.86f,
                        P_F12, s_tile_scale, true);
 
     int hour = ui_hour_now();

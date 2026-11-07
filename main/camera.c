@@ -483,8 +483,9 @@ camera_t *camera_tile_create(lv_obj_t *card, const char *title, const char *snap
     lv_obj_t *bar = lv_obj_create(card);
     lv_obj_set_size(bar, w, bar_h);
     lv_obj_align(bar, LV_ALIGN_BOTTOM_MID, 0, 0);
-    lv_obj_set_style_bg_color(bar, lv_color_hex(0x000000), 0);
-    lv_obj_set_style_bg_opa(bar, LV_OPA_50, 0);
+    // Нижняя полоса продолжает карточку, а не выглядит отдельным чёрным блоком.
+    lv_obj_set_style_bg_color(bar, lv_color_hex(0x1C1D20), 0);
+    lv_obj_set_style_bg_opa(bar, LV_OPA_COVER, 0);
     lv_obj_set_style_border_width(bar, 0, 0);
     lv_obj_set_style_radius(bar, (int)(12 * scale), 0);
     lv_obj_set_style_pad_all(bar, 0, 0);

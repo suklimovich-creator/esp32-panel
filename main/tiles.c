@@ -121,7 +121,7 @@ typedef struct {
 static tile_t *s_tiles;
 static int s_count;
 static lv_obj_t *s_pages[MAX_PAGES], *s_tabs[MAX_PAGES];
-static int s_npages;
+static int s_npages, s_page_idx;
 static int s_cols = 3, s_col_w = BASE_COL_W, s_row_h = BASE_COL_W, s_gap = BASE_GAP;
 static float s_scale = 1.0f;
 
@@ -151,6 +151,8 @@ static int TL(float v) { int n = (int)lroundf(v * s_scale); return n > 0 ? n : 1
 #define T_F14 tile_font(false, 15)
 #define T_F17 tile_font(true, 17)
 #define T_F18 tile_font(false, 17)
+#define T_F21 tile_font(false, 21)
+#define T_F26 tile_font(false, 26)
 #define T_F22S tile_font(true, 21)
 #define T_F32 tile_font(true, 32)
 
@@ -583,6 +585,17 @@ static int scene_key_at(const tile_t *t, lv_point_t p)
     return -1;
 }
 
+static const lv_font_t *scene_font(int kw, int kh)
+{
+    // На большой плитке подпись растёт вместе с клавишей, но оставляет
+    // место значку. На узких клавишах сохраняется читаемый минимум 12 px.
+    const lv_font_t *fonts[] = {T_F26, T_F21, T_F18, T_F14, T_F12};
+    float budget = fminf(kw / 6.0f, kh * 0.22f);
+    for (size_t i = 0; i < sizeof(fonts) / sizeof(fonts[0]); i++)
+        if (fonts[i] && fonts[i]->line_height <= budget) return fonts[i];
+    return T_F12;
+}
+
 static void draw_scenes(const tile_t *t, int x, int y, int w, int h)
 {
     d_card(x, y, w, h, false, false);
@@ -604,14 +617,21 @@ static void draw_scenes(const tile_t *t, int x, int y, int w, int h)
         const char *ic = icon_path(t->keys[i].icon ? t->keys[i].icon : "power");
         bool with_icon = ic && kh >= TS(32);
         float cx = r.x1 + kw / 2.0f;
+        const lv_font_t *font = scene_font(kw, kh);
         if (with_icon) {
-            // Как в WB: значок над подписью, поэтому даже узкая клавиша
-            // отводит тексту всю свою ширину, а не только хвост справа.
-            d_icon(ic, cx, r.y1 + kh * 0.31f, TS(18), 1.6f * s_scale,
+            // Значок и подпись образуют общий центрированный блок. Их размер
+            // зависит от клавиши, поэтому высокая плитка не остаётся с мелким
+            // содержимым, а компактная не выходит за границы кнопок.
+            float isize = fminf(TS(42), fminf(kw * 0.34f, kh * 0.34f));
+            float gap = fmaxf(TS(2), kh * 0.04f);
+            float group_h = isize + gap + font->line_height;
+            float top = r.y1 + fmaxf(TS(2), (kh - group_h) / 2.0f);
+            d_icon(ic, cx, top + isize / 2.0f, isize, fmaxf(1.0f, isize * 0.09f),
                    T_INK, LV_OPA_COVER);
-            d_text_fit_center(T_F12, T_INK, cx, r.y2 - TS(8), kw - TS(4), t->keys[i].title);
+            d_text_fit_center(font, T_INK, cx, top + isize + gap + font->line_height * 0.82f,
+                              kw - TS(4), t->keys[i].title);
         } else {
-            d_text_fit_center(T_F12, T_INK, cx, r.y1 + kh / 2.0f + TS(4),
+            d_text_fit_center(font, T_INK, cx, r.y1 + kh / 2.0f + font->line_height * 0.32f,
                               kw - TS(4), t->keys[i].title);
         }
     }
@@ -963,12 +983,17 @@ static void parse_tile(tile_t *t, const cJSON *o)
     if (t->type == T_CHART || t->type == T_CAMERA) def = 2;
     if (t->type == T_SCENES || t->type == T_TV || t->type == T_LEAK ||
         t->type == T_WEATHER || t->type == T_TODAY) def = 2;
-    t->h_cells = clampi(jcells(o, "h", def), 1, 4);
+    // Набору сцен нужны три ряда для крупной сетки 3×3. Остальные типы
+    // сохраняют прежний предел два ряда.
+    int max_h = t->type == T_SCENES ? 6 : 4;
+    t->h_cells = clampi(jcells(o, "h", def), 1, max_h);
 }
 
 // Вкладки: страница видна одна, переключение - нажатием на вкладку.
 static void show_page(int idx)
 {
+    if (idx < 0 || idx >= s_npages) return;
+    s_page_idx = idx;
     for (int i = 0; i < s_npages; i++) {
         bool on = i == idx;
         if (on) lv_obj_remove_flag(s_pages[i], LV_OBJ_FLAG_HIDDEN);
@@ -1027,6 +1052,8 @@ static void saver_show(int idx)
         if (i == idx) lv_obj_remove_flag(s_pages2[i], LV_OBJ_FLAG_HIDDEN);
         else lv_obj_add_flag(s_pages2[i], LV_OBJ_FLAG_HIDDEN);
     }
+    // У камер заставки отдельные индексы страниц: 100, 101, ...
+    camera_page_visible(100 + idx);
 }
 
 static void saver_clock_tick(void)
@@ -1045,7 +1072,10 @@ static void saver_exit(void)
 {
     if (!s_saver_on) return;
     s_saver_on = false;
+    camera_main_visible(false);
     if (s_home) lv_screen_load(s_home);
+    show_page(s_page_idx);          // восстановить вкладку и её камеры
+    camera_main_visible(true);
 }
 
 static void saver_touch_cb(lv_event_t *e)
@@ -1066,10 +1096,11 @@ static void saver_cb(lv_timer_t *tm)
             chart_close();
             s_saver_on = true;
             s_saver_page = 0;
-            saver_show(0);
             s_last_cycle = lv_tick_get();
             saver_clock_tick();
             lv_screen_load(s_saver_scr);
+            saver_show(0);
+            camera_main_visible(true);
         }
         return;
     }
@@ -1121,7 +1152,9 @@ void tiles_build(void *content_obj, void *tabbar_obj, const char *json)
     s_count = 0;
     s_npages = 0;
     s_today_n = 0;                     // реестр лент собирается заново
-    s_home = lv_screen_active();       // сюда возвращает заставка
+    // content уже принадлежит главному экрану, но во время построения этот
+    // экран ещё не активен. lv_screen_active() здесь возвращал бы пустой экран.
+    s_home = lv_obj_get_screen(content);
 
     cJSON_ArrayForEach(pg, pages) {
         if (s_npages >= MAX_PAGES) break;

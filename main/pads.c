@@ -42,8 +42,8 @@
 #define MAX_SENSORS 8
 #define MAX_RESETS 4
 #define W_SERIES 24
-#define TOD_TASKS 8
-#define TOD_EVENTS 6
+#define TOD_TASKS 16
+#define TOD_EVENTS 10
 #define ECHO_IGNORE_MS 3000     // после команды не дёргать пульт эхом: приводы отвечают не сразу
 #define STEP_PUB_DELAY_MS 700   // кнопки - и +: отправить, когда перестали нажимать
 #define CLOSE_IDLE_MS 45000     // пульт закрывается сам, если к нему не прикасались
@@ -119,12 +119,12 @@ struct pad {
     bool has_feed;
     char t_date[32], t_list[48];
     int t_ntasks;
-    char t_tasks[TOD_TASKS][72];
+    char t_tasks[TOD_TASKS][128];
     int t_ndays;
     struct {
         char label[40];
         int nev;
-        struct { char time[14], end[8], text[72]; uint32_t color; uint8_t state; } ev[TOD_EVENTS];
+        struct { char time[14], end[8], text[128]; uint32_t color; uint8_t state; } ev[TOD_EVENTS];
     } t_days[2];
 };
 
@@ -184,6 +184,9 @@ static float s_scale_shown;           // где стоит шкала конди
 static int s_sheet;                   // 0 - нет, иначе Z_CHIP/Z_FAN/Z_SWV/Z_SWH/Z_MODEBTN
 static int s_l_axis;                  // свет: ось жеста, 1 - яркость, 2 - теплота
 static int s_l_lvl0, s_l_tmp0;        // свет: значения в начале жеста
+static int s_today_scroll, s_today_scroll_max;  // «Сегодня»: прокрутка полного экрана
+static bool s_today_drag;
+static float s_today_scroll0;
 
 lv_font_t *F76, *F60, *F46, *F32, *F22S, *F17, *F13, *F12;
 
@@ -546,6 +549,104 @@ void d_num_deg(const lv_font_t *big, const lv_font_t *small, uint32_t c, float x
     float x1 = x - (wn + wd) / 2.0f;
     d_text(big, c, LV_OPA_COVER, x1, base, 0, num);
     d_text(small, c, LV_OPA_COVER, x1 + wn + 1, base + deg_dy, 0, deg);
+}
+
+// Текст, урезанный по ширине: многоточие в конце, UTF-8 не режем посередине.
+static void d_text_ellipsize(const lv_font_t *f, uint32_t c, float x, float base,
+                             int align, int maxw, const char *t)
+{
+    if (maxw <= 0) return;
+    char b[128];
+    snprintf(b, sizeof(b), "%s", t ? t : "");
+    if (text_w(f, b) > maxw) {
+        size_t n = strlen(b);
+        while (n > 0) {
+            do n--; while (n > 0 && ((unsigned char)b[n] & 0xC0) == 0x80);
+            snprintf(b + n, sizeof(b) - n, "…");
+            if (text_w(f, b) <= maxw) break;
+        }
+    }
+    d_text(f, c, LV_OPA_COVER, x, base, align, b);
+}
+
+// Перенос по словам. draw=false - только посчитать строки. Возвращает
+// высоту блока в пикселях. Слово длиннее строки режется по ширине.
+static int wrap_run(const lv_font_t *f, uint32_t c, float x, float base, int maxw,
+                    const char *t, int max_lines, int line_h, bool draw)
+{
+    if (!t || !*t || maxw <= 0 || max_lines <= 0) return 0;
+    char b[128];
+    snprintf(b, sizeof(b), "%s", t);
+    char *cur = b;
+    int lines = 0;
+    while (*cur && lines < max_lines) {
+        while (*cur == ' ') cur++;
+        if (!*cur) break;
+        bool last = lines == max_lines - 1;
+        if (text_w(f, cur) <= maxw) {
+            if (draw) d_text(f, c, LV_OPA_COVER, x, base + lines * line_h, 0, cur);
+            lines++;
+            break;
+        }
+        size_t n = strlen(cur);
+        // наибольший префикс по границе слова, который помещается
+        size_t best_space = 0;
+        for (size_t i = 0; i < n; i++) {
+            if (cur[i] != ' ') continue;
+            cur[i] = 0;
+            bool fits = text_w(f, cur) <= maxw;
+            cur[i] = ' ';
+            if (fits) best_space = i;
+            else break;
+        }
+        if (last) {
+            // последняя строка: что осталось, с многоточием
+            if (draw) d_text_ellipsize(f, c, x, base + lines * line_h, 0, maxw, cur);
+            lines++;
+            break;
+        }
+        if (best_space) {
+            char save = cur[best_space];
+            cur[best_space] = 0;
+            if (draw) d_text(f, c, LV_OPA_COVER, x, base + lines * line_h, 0, cur);
+            cur[best_space] = save;
+            cur += best_space + 1;
+            lines++;
+            continue;
+        }
+        // ни одно слово целиком не влезает - жёсткий перенос по ширине
+        size_t best = 0;
+        for (size_t i = 0; i < n; ) {
+            do i++; while (i < n && ((unsigned char)cur[i] & 0xC0) == 0x80);
+            char save = cur[i];
+            cur[i] = 0;
+            bool fits = text_w(f, cur) <= maxw;
+            cur[i] = save;
+            if (fits) best = i;
+            else break;
+        }
+        if (!best) break;
+        char save = cur[best];
+        cur[best] = 0;
+        if (draw) d_text(f, c, LV_OPA_COVER, x, base + lines * line_h, 0, cur);
+        cur[best] = save;
+        cur += best;
+        lines++;
+    }
+    return lines * line_h;
+}
+
+// Сколько строк займёт текст при переносе по словам (не более max_lines).
+static int wrap_measure(const lv_font_t *f, const char *t, int maxw, int max_lines)
+{
+    return wrap_run(f, 0, 0, 0, maxw, t, max_lines, 1, false) ;
+}
+
+// Текст с переносом по словам. Возвращает высоту блока в пикселях.
+static int d_text_wrap(const lv_font_t *f, uint32_t c, float x, float base, int maxw,
+                       const char *t, int max_lines, int line_h)
+{
+    return wrap_run(f, c, x, base, maxw, t, max_lines, line_h, true);
 }
 
 // --- маленький SVG-путь обводкой: M L H V C S Q A Z, абсолютные и относительные.
@@ -1174,9 +1275,40 @@ static void draw_cover(pad_t *p)
 }
 
 // ---- свет (с 0.11): сфера, вертикаль - яркость, горизонталь - теплота
+// Полный экран повторяет плитку wb-svg-panel: светящийся шар, слева дуга
+// яркости, снизу цветные точки теплоты, кнопки +/− вокруг.
 #define LT_CX 240.0f
-#define LT_CY 250.0f
-#define LT_R 112.0f
+#define LT_CY 246.0f
+#define LT_R 102.0f
+#define LT_AR 118.0f
+#define LT_BR 150.0f
+
+static void light_ball(float cx, float cy, float r, uint32_t tint, bool on, float lvl)
+{
+    if (on) {
+        for (int i = 4; i >= 0; i--)
+            d_circle(cx, cy, r + 10 + i * 8, tint, (lv_opa_t)(4 + lvl * 9));
+    }
+    // объём без градиентов: стопка кругов от тёмного края к светлому блику
+    for (int i = 0; i <= 12; i++) {
+        float k = i / 12.0f, rr = r * (1 - k * 0.80f);
+        uint32_t base = on ? mixc(0x2A2B2F, tint, 0.35f + 0.65f * lvl)
+                           : mixc(0x2A2B2F, tint, 0.35f);
+        uint32_t col = mixc(base, on ? 0xFFFFFF : 0x8E8E90, k * k * (on ? 0.55f : 0.22f));
+        d_circle(cx - r * 0.26f * k, cy - r * 0.30f * k, rr, col, LV_OPA_COVER);
+    }
+    d_border((int)(cx - r), (int)(cy - r), (int)(2 * r) + 1, (int)(2 * r) + 1,
+             LV_RADIUS_CIRCLE, 2, on ? tint : 0x3A3B40, LV_OPA_COVER);
+}
+
+static float light_warm_q(const pad_t *p)
+{
+    // 0 - холодный край (temp_max), 1 - тёплый (temp_min), как у панели.
+    if (!p->temp_cmd) return 0.5f;
+    float span = (float)(p->temp_max - p->temp_min);
+    float f = span > 0 ? (p->l_tmp - p->temp_min) / span : 0.5f;
+    return clampf(1.0f - f, 0, 1);
+}
 
 static void draw_light(pad_t *p)
 {
@@ -1184,52 +1316,80 @@ static void draw_light(pad_t *p)
     d_rect(0, 0, 480, 480, 0, K_BG2, LV_OPA_COVER);
     int mx = p->lvl_max > 0 ? p->lvl_max : 100;
     float lvl = p->has_lvl ? clampf((float)p->l_lvl / mx, 0, 1) : 0;
+    float warm = light_warm_q(p);
     uint32_t tint = light_tint(p);
-    // сфера: свечение оттенком света, сила свечения - от яркости
-    for (int i = 4; i >= 0; i--)
-        d_circle(LT_CX, LT_CY, LT_R + 8 + i * 7, tint, on ? (lv_opa_t)(5 + lvl * 10) : 4);
-    d_circle(LT_CX, LT_CY, LT_R, on ? tint : 0x2A2B2F,
-             on ? (lv_opa_t)(30 + lvl * 200) : LV_OPA_COVER);
-    d_border((int)(LT_CX - LT_R), (int)(LT_CY - LT_R), (int)(2 * LT_R) + 1, (int)(2 * LT_R) + 1,
-             LV_RADIUS_CIRCLE, 2, on ? tint : 0x3A3B40, LV_OPA_COVER);
-    zone((int)(LT_CX - LT_R) - 6, (int)(LT_CY - LT_R) - 6,
-         (int)(LT_CX + LT_R) + 6, (int)(LT_CY + LT_R) + 6, Z_LIGHT, 0);
 
+    light_ball(LT_CX, LT_CY, LT_R, tint, on, lvl);
+    zone((int)(LT_CX - LT_R) - 8, (int)(LT_CY - LT_R) - 8,
+         (int)(LT_CX + LT_R) + 8, (int)(LT_CY + LT_R) + 8, Z_LIGHT, 0);
+
+    // шкала яркости слева: дуга и бегунок
+    d_arc(LT_CX, LT_CY, LT_AR, 6, 165, 255, K_PILL, LV_OPA_COVER);
+    if (lvl > 0.005f)
+        d_arc(LT_CX, LT_CY, LT_AR, 6, 165, 165 + 90 * lvl, on ? K_ACTIVE : 0x8E8E90, LV_OPA_COVER);
+    float a = (165 + 90 * lvl) * (float)M_PI / 180;
+    d_circle(LT_CX + (LT_AR + 2) * cosf(a), LT_CY + (LT_AR + 2) * sinf(a), 7,
+             on ? K_INK : 0x8E8E90, LV_OPA_COVER);
+
+    // теплота снизу: цветные точки от холодного к тёплому и бегунок
+    if (p->temp_cmd) {
+        for (int i = 0; i <= 20; i++) {
+            float q = i / 20.0f;
+            float ad = (140 - 100 * q) * (float)M_PI / 180;
+            uint32_t c = mixc(p->cold, p->warm, q);
+            d_circle(LT_CX + LT_AR * cosf(ad), LT_CY + LT_AR * sinf(ad), 3.1f,
+                     c, on ? LV_OPA_COVER : 170);
+        }
+        float ad = (140 - 100 * warm) * (float)M_PI / 180;
+        d_circle(LT_CX + (LT_AR + 2) * cosf(ad), LT_CY + (LT_AR + 2) * sinf(ad), 7,
+                 on ? K_INK : 0x8E8E90, LV_OPA_COVER);
+    }
+
+    // значение крупно в шаре; во время горизонтального жеста - теплота
     char b[32];
     if (s_l_axis == 2 && p->temp_cmd) {
-        // во время жеста по горизонтали крупно - теплота
         if (p->temp_unit && !strcmp(p->temp_unit, "percent"))
-            snprintf(b, sizeof(b), "%d%%", (int)lroundf((p->l_tmp - p->temp_min) * 100.0f /
-                                                        (p->temp_max - p->temp_min)));
+            snprintf(b, sizeof(b), "%d%%", (int)lroundf(warm * 100));
         else snprintf(b, sizeof(b), "%d", p->l_tmp);
         d_text(F60, K_INK, LV_OPA_COVER, LT_CX, LT_CY + 16, 1, b);
         d_text(F13, K_DIM, LV_OPA_COVER, LT_CX, LT_CY + 52, 1,
                p->temp_unit && !strcmp(p->temp_unit, "percent") ? "теплота" : "теплота, К");
     } else {
-        snprintf(b, sizeof(b), "%d%%", p->has_lvl ? (int)lroundf(p->l_lvl * 100.0f / mx) : 0);
+        snprintf(b, sizeof(b), "%d%%", p->has_lvl ? (int)lroundf(lvl * 100) : 0);
         d_text(F60, on ? K_INK : K_DIM, LV_OPA_COVER, LT_CX, LT_CY + 16, 1, b);
         d_text(F13, K_DIM, LV_OPA_COVER, LT_CX, LT_CY + 52, 1, "яркость");
     }
-    // - и + по бокам: яркость
-    for (int k = 0; k < 2; k++) {
-        float x = k ? 416 : 64;
-        int z = k ? Z_PLUS : Z_MINUS;
-        d_circle(x, LT_CY, 26, pressed(z, 0) ? 0x55565C : K_PILL, LV_OPA_COVER);
-        d_line(x - 9, LT_CY, x + 9, LT_CY, 3, K_INK, LV_OPA_COVER);
-        if (k) d_line(x, LT_CY - 9, x, LT_CY + 9, 3, K_INK, LV_OPA_COVER);
-        zone((int)x - 38, (int)LT_CY - 38, (int)x + 38, (int)LT_CY + 38, z, 0);
+
+    // Кнопки на окружности, как у панели: яркость сверху/снизу, теплота
+    // слева (холоднее) и справа (теплее).
+    struct { float deg; int z; const char *txt; const char *icon; uint32_t col; } btns[] = {
+        {270, Z_PLUS, "+", NULL, K_INK},
+        {90, Z_MINUS, "−", NULL, K_INK},
+        {150, Z_TPLUS, NULL, IC_SNOW, 0xBCD8FF},
+        {30, Z_TMINUS, NULL, IC_HEAT, 0xFFB46B},
+    };
+    for (size_t i = 0; i < sizeof(btns) / sizeof(btns[0]); i++) {
+        if ((btns[i].z == Z_TPLUS || btns[i].z == Z_TMINUS) && !p->temp_cmd) continue;
+        float ad = btns[i].deg * (float)M_PI / 180;
+        float x = LT_CX + LT_BR * cosf(ad), y = LT_CY + LT_BR * sinf(ad);
+        d_circle(x, y, 25, pressed(btns[i].z, 0) ? 0x55565C : K_PILL, LV_OPA_COVER);
+        if (btns[i].icon) d_icon(btns[i].icon, x, y, 23, 2.2f, btns[i].col, LV_OPA_COVER);
+        else d_text(F22S, btns[i].col, LV_OPA_COVER, x, y + 8, 1, btns[i].txt);
+        zone((int)x - 36, (int)y - 36, (int)x + 36, (int)y + 36, btns[i].z, 0);
     }
-    // теплота снизу: слева холоднее, справа теплее
+
+    // строка значений под шаром
+    char v[80];
     if (p->temp_cmd) {
-        for (int k = 0; k < 2; k++) {
-            float x = k ? 312 : 168;
-            int z = k ? Z_TMINUS : Z_TPLUS;      // теплее - ближе к минимуму шкалы
-            d_circle(x, 424, 26, pressed(z, 0) ? 0x55565C : K_PILL, LV_OPA_COVER);
-            d_icon(k ? IC_HEAT : IC_SNOW, x, 424, 24, 2.2f, k ? p->warm : p->cold, LV_OPA_COVER);
-            zone((int)x - 38, 386, (int)x + 38, 462, z, 0);
-            d_text(F12, K_DIM, LV_OPA_COVER, x, 472, 1, k ? "теплее" : "холоднее");
-        }
+        char tb[24];
+        if (p->temp_unit && !strcmp(p->temp_unit, "percent")) snprintf(tb, sizeof(tb), "%d %%", (int)lroundf(warm * 100));
+        else snprintf(tb, sizeof(tb), "%d К", p->l_tmp);
+        snprintf(v, sizeof(v), "яркость  %d %%      теплота  %s",
+                 p->has_lvl ? (int)lroundf(lvl * 100) : 0, tb);
+    } else {
+        snprintf(v, sizeof(v), "яркость  %d %%", p->has_lvl ? (int)lroundf(lvl * 100) : 0);
     }
+    d_text(F13, K_DIM, LV_OPA_COVER, 240, 452, 1, v);
     d_head(p, p->power_cmd != NULL, on);
 }
 
@@ -1254,51 +1414,49 @@ static void draw_tv(pad_t *p)
         size_t n = strlen(b);
         snprintf(b + n, sizeof(b) - n, "%s%s", n ? " · " : "", p->app_now);
     }
-    d_text(F13, on ? K_ACTIVE : K_DIM, LV_OPA_COVER, 240, 94, 1, b);
-    // приложения чипами (не более двух рядов по четыре)
+    d_text_ellipsize(F13, on ? K_ACTIVE : K_DIM, 240, 90, 1, 400, b);
+
+    // приложения чипами сверху: ряд всегда по центру (не более двух рядов)
     if (p->napps) {
         int per = p->napps > 4 ? 4 : p->napps;
-        int bw = (448 - (per - 1) * 8) / per;
-        for (int i = 0; i < p->napps; i++) {
+        int rows = (p->napps + per - 1) / per;
+        if (rows > 2) { rows = 2; per = 4; }
+        int bw = (432 - (per - 1) * 10) / per;
+        for (int i = 0; i < p->napps && i < 8; i++) {
             int r = i / per, c = i % per;
-            int x = 16 + c * (bw + 8), y = 108 + r * 52;
-            d_rect(x, y, bw, 44, 14, pressed(Z_APP, i) ? 0x3A3B40 : K_CHIP, LV_OPA_COVER);
-            zone(x - 2, y - 2, x + bw + 2, y + 46, Z_APP, i);
-            // длинное имя приложения - с многоточием по ширине чипа
-            char tb[96];
-            snprintf(tb, sizeof(tb), "%s", p->apps[i].title ? p->apps[i].title : "");
-            int maxw = bw - 14;
-            if (text_w(F13, tb) > maxw) {
-                size_t n = strlen(tb);
-                while (n > 0) {
-                    do n--; while (n > 0 && ((unsigned char)tb[n] & 0xC0) == 0x80);
-                    snprintf(tb + n, sizeof(tb) - n, "…");
-                    if (text_w(F13, tb) <= maxw) break;
-                }
-            }
-            d_text(F13, K_INK, LV_OPA_COVER, x + bw / 2, y + 28, 1, tb);
+            int in_row = r == rows - 1 ? p->napps - r * per : per;
+            int row_w = in_row * bw + (in_row - 1) * 10;
+            int x = 240 - row_w / 2 + c * (bw + 10), y = 104 + r * 50;
+            d_rect(x, y, bw, 42, 14, pressed(Z_APP, i) ? 0x3A3B40 : K_CHIP, LV_OPA_COVER);
+            zone(x - 2, y - 2, x + bw + 2, y + 44, Z_APP, i);
+            d_text_ellipsize(F13, K_INK, x + bw / 2, y + 27, 1, bw - 14,
+                             p->apps[i].title ? p->apps[i].title : "");
         }
     }
-    // медиа-ряд: перемотка и пуск слева, назад/домой/источник справа
-    tv_btn(64, 236, 20, TK_REW, IC_REW, NULL);
-    tv_btn(134, 236, 20, TK_PLAY, IC_PLAY, NULL);
-    tv_btn(204, 236, 20, TK_FWD, IC_FWD, NULL);
-    tv_btn(284, 236, 20, TK_BACK, IC_BACK, NULL);
-    tv_btn(354, 236, 20, TK_HOME, icon_path("home"), NULL);
-    tv_btn(424, 236, 20, TK_SOURCE, IC_SRC, NULL);
-    // крестовина
-    tv_btn(170, 296, 28, TK_UP, IC_CHEV_U, NULL);
-    tv_btn(170, 424, 28, TK_DOWN, IC_CHEV_D, NULL);
-    tv_btn(100, 360, 28, TK_LEFT, IC_CHEV_L, NULL);
-    tv_btn(240, 360, 28, TK_RIGHT, IC_CHEV_R, NULL);
-    d_circle(170, 360, 34, pressed(Z_KEY, TK_OK) ? 0x4A4B50 : 0x3A3B40, LV_OPA_COVER);
-    d_text(F17, K_INK, LV_OPA_COVER, 170, 366, 1, "OK");
-    zone(134, 324, 206, 396, Z_KEY, TK_OK);
-    // громкость справа
-    tv_btn(400, 296, 26, TK_VOL_UP, NULL, "+");
-    tv_btn(400, 360, 26, TK_MUTE, IC_VOL_X, NULL);
-    tv_btn(400, 424, 26, TK_VOL_DOWN, NULL, "-");
-    d_icon(IC_VOL, 344, 360, 22, 2, K_DIM, LV_OPA_COVER);
+
+    // медиа и служебные клавиши - два симметричных ряда по центру
+    tv_btn(180, 208, 20, TK_REW, IC_REW, NULL);
+    tv_btn(240, 208, 20, TK_PLAY, IC_PLAY, NULL);
+    tv_btn(300, 208, 20, TK_FWD, IC_FWD, NULL);
+    tv_btn(180, 252, 20, TK_BACK, IC_BACK, NULL);
+    tv_btn(240, 252, 20, TK_SOURCE, IC_SRC, NULL);
+    tv_btn(300, 252, 20, TK_HOME, icon_path("home"), NULL);
+
+    // крестовина слева и громкость справа: визуальный центр группы - 240
+    const int cx = 176, cy = 386, d = 62;
+    tv_btn(cx, cy - d, 27, TK_UP, IC_CHEV_U, NULL);
+    tv_btn(cx, cy + d, 27, TK_DOWN, IC_CHEV_D, NULL);
+    tv_btn(cx - d, cy, 27, TK_LEFT, IC_CHEV_L, NULL);
+    tv_btn(cx + d, cy, 27, TK_RIGHT, IC_CHEV_R, NULL);
+    d_circle(cx, cy, 35, pressed(Z_KEY, TK_OK) ? 0x4A4B50 : 0x3A3B40, LV_OPA_COVER);
+    d_text(F17, K_INK, LV_OPA_COVER, cx, cy + 6, 1, "OK");
+    zone(cx - 38, cy - 38, cx + 38, cy + 38, Z_KEY, TK_OK);
+
+    const int vx = 368;
+    d_icon(IC_VOL, vx, cy - 98, 20, 2, K_DIM, LV_OPA_COVER);
+    tv_btn(vx, cy - 62, 26, TK_VOL_UP, NULL, "+");
+    tv_btn(vx, cy, 26, TK_MUTE, IC_VOL_X, NULL);
+    tv_btn(vx, cy + 62, 26, TK_VOL_DOWN, NULL, "-");
     d_head(p, p->power_cmd != NULL, on);
 }
 
@@ -1350,25 +1508,122 @@ static void draw_leak(pad_t *p)
     d_head(p, false, true);
 }
 
-// ---- погода (с 0.11): сейчас и почасовой ряд
+// ---- погода (с 0.11): как у панели - оси, облачность полосой, дождь столбиками
+#define W_X0 54
+#define W_X1 452
+#define W_Y0 206
+#define W_Y1 372
+
+// Значок ряда прогноза: упрощённые коды панели 2 - ясно, 4 - облачно, 5 - дождь.
+static void wmo_weather_icon(int code, float cx, float cy, float r, uint32_t c)
+{
+    const char *ic = code == 2 ? icon_path("sun") : code == 5 ? icon_path("rain") : icon_path("cloud");
+    d_icon(ic, cx, cy, r * 1.8f, r * 0.32f, c, LV_OPA_COVER);
+}
+
 static void draw_weather(pad_t *p)
 {
     d_rect(0, 0, 480, 480, 0, K_BG2, LV_OPA_COVER);
     int hour = ui_hour_now();
-    bool day = hour >= 6 && hour < 21;
-    char b[48];
-    const char *ic = wmo_icon(p->n_code ? p->s_code[0] : -1, day);
-    if (ic) d_icon(ic, 108, 146, 64, 3.2f, K_INK, LV_OPA_COVER);
+    const char *ic = wmo_icon(p->n_code ? p->s_code[0] : -1, hour >= 6 && hour < 21);
+    if (ic) d_icon(ic, 92, 132, 72, 4.2f, K_INK, LV_OPA_COVER);
+    char b[80];
     if (p->has_wtemp) snprintf(b, sizeof(b), "%.0f", p->w_temp);
     else snprintf(b, sizeof(b), "--");
-    d_num_deg(F60, F32, K_INK, 208, 168, -28, b, "°");
-    if (p->w_desc[0]) d_text(F13, K_DIM, LV_OPA_COVER, 152, 196, 0, p->w_desc);
+    d_num_deg(F60, F17, K_INK, 258, 160, 16, b, "°");
+    if (p->w_desc[0]) d_text_ellipsize(F17, K_DIM, 270, 178, 1, 300, p->w_desc);
     if (p->has_wt) {
         snprintf(b, sizeof(b), "мин %.0f°  макс %.0f°", p->w_tmin, p->w_tmax);
-        d_text(F13, K_INK, LV_OPA_COVER, 152, 218, 0, b);
+        d_text(F13, K_DIM, LV_OPA_COVER, 92, 198, 1, b);
     }
-    // влажность, давление, ветер
-    const char *caps[3] = {"влажность", "давление", "ветер"};
+
+    // ряд температур без пропусков
+    float tv[W_SERIES];
+    int n = 0;
+    for (int i = 0; i < p->n_t && n < W_SERIES; i++)
+        if (!isnan(p->s_t[i])) tv[n++] = p->s_t[i];
+    if (n >= 2) {
+        float lo = 1e9f, hi = -1e9f;
+        for (int i = 0; i < n; i++) {
+            if (tv[i] < lo) lo = tv[i];
+            if (tv[i] > hi) hi = tv[i];
+        }
+        float padv = (hi - lo) * 0.10f;
+        if (padv < 1) padv = 1;
+        lo -= padv; hi += padv;
+        // горизонтальная сетка: округлённые границы, 5 линий
+        float grid_lo = floorf(lo), grid_hi = ceilf(hi);
+        if (grid_hi - grid_lo < 4) grid_hi = grid_lo + 4;
+        for (int i = 0; i <= 4; i++) {
+            float v = grid_lo + (grid_hi - grid_lo) * i / 4;
+            float y = W_Y1 - (W_Y1 - W_Y0) * (v - grid_lo) / (grid_hi - grid_lo);
+            d_line(W_X0, y, W_X1, y, 1, K_INK, i == 0 || i == 4 ? 60 : 30);
+            snprintf(b, sizeof(b), "%.0f°", v);
+            d_text(F13, K_DIM, LV_OPA_COVER, W_X0 - 8, y + 4, 2, b);
+        }
+        float xstep = (float)(W_X1 - W_X0) / (n - 1);
+        // облачность: полупрозрачные сегменты фона графика
+        if (p->n_cloud > 0) {
+            int step = n > 12 ? (n - 1) / 12 + 1 : 1;
+            for (int i = 0; i < p->n_cloud && i < n; i += step) {
+                if (isnan(p->s_cloud[i]) || p->s_cloud[i] <= 0) continue;
+                float x = W_X0 + xstep * i;
+                float w = xstep * step;
+                if (x + w > W_X1) w = W_X1 - x;
+                lv_opa_t op = (lv_opa_t)(15 + 70 * clampf(p->s_cloud[i] / 100.0f, 0, 1));
+                d_rect((int)x, W_Y0, (int)(w + 0.5f), W_Y1 - W_Y0, 0, K_INK, op);
+            }
+        }
+        // вертикальные оси времени
+        for (int i = 0; i < n; i++) {
+            int hh = p->start_hour >= 0 ? (p->start_hour + i) % 24 : i;
+            if (hh % 3 == 0) d_line(W_X0 + xstep * i, W_Y0, W_X0 + xstep * i, W_Y1, 1, K_INK, 24);
+        }
+        // дождь: столбики от нижней оси
+        if (p->n_prob > 0) {
+            for (int i = 0; i < p->n_prob && i < n; i++) {
+                if (isnan(p->s_prob[i]) || p->s_prob[i] <= 0) continue;
+                float x = W_X0 + xstep * i;
+                float bh = (W_Y1 - W_Y0) * 0.42f * clampf(p->s_prob[i] / 100.0f, 0, 1);
+                d_rect((int)(x - 3), (int)(W_Y1 - bh), 6, (int)bh, 2, 0x3B8FD4, 130);
+            }
+        }
+        // линия температуры поверх, экстремумы - точками
+        float prevx = 0, prevy = 0;
+        float fmin = 1e9f, fmax = -1e9f;
+        for (int i = 0; i < n; i++) {
+            if (tv[i] < fmin) fmin = tv[i];
+            if (tv[i] > fmax) fmax = tv[i];
+        }
+        for (int i = 0; i < n; i++) {
+            float x = W_X0 + xstep * i;
+            float y = W_Y1 - (W_Y1 - W_Y0) * (tv[i] - lo) / (hi - lo);
+            if (i) d_line(prevx, prevy, x, y, 2.5f, 0x3B8FD4, LV_OPA_COVER);
+            if (fabsf(tv[i] - fmin) < 0.01f || fabsf(tv[i] - fmax) < 0.01f)
+                d_circle(x, y, 3.4f, 0x3B8FD4, LV_OPA_COVER);
+            prevx = x; prevy = y;
+        }
+        // значки погоды по верху графика
+        if (p->n_code > 0) {
+            int step = n > 8 ? (n - 1) / 7 : 1;
+            for (int i = 0; i < p->n_code && i < n; i += step)
+                wmo_weather_icon(p->s_code[i], W_X0 + xstep * i, W_Y0 + 18, 12, K_DIM);
+        }
+        // подписи времени под осью
+        for (int i = 0; i < n; i++) {
+            int hh = p->start_hour >= 0 ? (p->start_hour + i) % 24 : i;
+            float lx = W_X0 + xstep * i;
+            if (hh % 6 == 0 && lx < W_X1 - 24) {
+                snprintf(b, sizeof(b), "%02d:00", hh);
+                d_text(F13, K_DIM, LV_OPA_COVER, lx, W_Y1 + 18, 1, b);
+            }
+        }
+    } else {
+        d_text(F17, K_DIM, LV_OPA_COVER, 240, 300, 1, "Прогноз пока не получен");
+    }
+
+    // текущие показатели чипами внизу
+    const char *labels[3] = {"Влажность", "Давление", "Ветер"};
     char vals[3][24];
     if (p->has_whum) snprintf(vals[0], sizeof(vals[0]), "%.0f %%", p->w_hum);
     else snprintf(vals[0], sizeof(vals[0]), "—");
@@ -1377,96 +1632,60 @@ static void draw_weather(pad_t *p)
     if (p->has_wwind) snprintf(vals[2], sizeof(vals[2]), "%.1f м/с", p->w_wind);
     else snprintf(vals[2], sizeof(vals[2]), "—");
     for (int i = 0; i < 3; i++) {
-        int x = 16 + i * 152;
-        d_rect(x, 236, 142, 52, 14, K_CHIP, LV_OPA_COVER);
-        d_text(F12, K_DIM, LV_OPA_COVER, x + 71, 256, 1, caps[i]);
-        d_text(F17, K_INK, LV_OPA_COVER, x + 71, 278, 1, vals[i]);
-    }
-    // почасовой ряд: температура линией, осадки столбиками
-    int X0 = 36, X1 = 448, Y0 = 312, Y1 = 396;
-    if (p->n_t >= 2) {
-        float lo = 1e9f, hi = -1e9f;
-        for (int i = 0; i < p->n_t; i++) {
-            if (isnan(p->s_t[i])) continue;
-            if (p->s_t[i] < lo) lo = p->s_t[i];
-            if (p->s_t[i] > hi) hi = p->s_t[i];
-        }
-        if (hi - lo < 2) { lo -= 1; hi += 1; }
-        for (int i = 0; i < p->n_prob && i < p->n_t; i++) {
-            if (isnan(p->s_prob[i]) || p->s_prob[i] < 5) continue;
-            float x = X0 + (X1 - X0) * i / (p->n_t - 1);
-            int bh = (int)(p->s_prob[i] / 100 * 34);
-            d_rect((int)x - 4, Y1 + 8 + (34 - bh), 9, bh, 3, 0x3B8FD4, 160);
-        }
-        float lx = 0, ly = 0;
-        bool have = false;
-        for (int i = 0; i < p->n_t; i++) {
-            if (isnan(p->s_t[i])) { have = false; continue; }
-            float x = X0 + (X1 - X0) * i / (p->n_t - 1);
-            float y = Y1 - (p->s_t[i] - lo) / (hi - lo) * (Y1 - Y0);
-            if (have) d_line(lx, ly, x, y, 2.6f, K_ACTIVE, LV_OPA_COVER);
-            lx = x; ly = y; have = true;
-        }
-        snprintf(b, sizeof(b), "%.0f°", hi);
-        d_text(F12, K_DIM, LV_OPA_COVER, X1, Y0 - 6, 2, b);
-        snprintf(b, sizeof(b), "%.0f°", lo);
-        d_text(F12, K_DIM, LV_OPA_COVER, X1, Y1 + 4, 2, b);
-        for (int i = 0; i < p->n_t; i += 6) {
-            float x = X0 + (X1 - X0) * i / (p->n_t - 1);
-            if (p->start_hour >= 0) snprintf(b, sizeof(b), "%02d:00", (p->start_hour + i) % 24);
-            else snprintf(b, sizeof(b), "+%dч", i);
-            d_text(F12, K_DIM, LV_OPA_COVER, x, 470, 1, b);
-        }
-    } else {
-        d_text(F13, K_DIM, LV_OPA_COVER, 240, 360, 1, "прогноза пока нет");
+        int x = 36 + i * 140;
+        d_rect(x, 420, 128, 42, 14, K_CHIP, LV_OPA_COVER);
+        d_text(F13, K_DIM, LV_OPA_COVER, x + 64, 436, 1, labels[i]);
+        d_text(F13, K_INK, LV_OPA_COVER, x + 64, 452, 1, vals[i]);
     }
     d_head(p, false, true);
 }
 
-// ---- «Сегодня» (с 0.11): дела и события из ленты
+// ---- «Сегодня» (с 0.11): все задачи и события, прокрутка жестом
 static void draw_today(pad_t *p)
 {
     d_rect(0, 0, 480, 480, 0, K_BG2, LV_OPA_COVER);
-    if (p->t_date[0]) d_text(F13, K_DIM, LV_OPA_COVER, 240, 94, 1, p->t_date);
+    int y = 92 - s_today_scroll;
+    if (p->t_date[0]) {
+        d_text_ellipsize(F22S, K_INK, 40, y, 0, 400, p->t_date);
+        y += 42;
+    }
     if (!p->has_feed) {
-        d_text(F13, K_DIM, LV_OPA_COVER, 240, 260, 1, "Загрузка…");
+        d_text(F17, K_DIM, LV_OPA_COVER, 240, 250, 1, "Загрузка планов…");
         d_head(p, false, true);
         return;
     }
-    char b[48];
-    int y = 118;
     if (p->t_ntasks) {
-        d_text(F13, K_DIM, LV_OPA_COVER, 32, y + 10, 0, p->t_list[0] ? p->t_list : "Дела");
-        y += 30;
-        int show = p->t_ntasks < 4 ? p->t_ntasks : 4;
-        for (int i = 0; i < show; i++) {
-            d_border(34, y + 2, 18, 18, 5, 2, K_DIM, LV_OPA_COVER);
-            d_text(F17, K_INK, LV_OPA_COVER, 64, y + 17, 0, p->t_tasks[i]);
-            y += 34;
+        d_text(F13, K_ACTIVE, LV_OPA_COVER, 40, y, 0,
+               p->t_list[0] ? p->t_list : "Задачи на сегодня");
+        y += 14;
+        for (int i = 0; i < p->t_ntasks; i++) {
+            d_border(46, y + 8, 14, 14, LV_RADIUS_CIRCLE, 2, K_DIM, LV_OPA_COVER);
+            y += d_text_wrap(F17, K_INK, 74, y + 22, 372, p->t_tasks[i], 3, 21) + 10;
         }
-        if (p->t_ntasks > show) {
-            snprintf(b, sizeof(b), "ещё %d", p->t_ntasks - show);
-            d_text(F12, K_DIM, LV_OPA_COVER, 64, y + 12, 0, b);
-            y += 26;
-        }
-        y += 8;
+        y += 4;
     }
-    for (int d = 0; d < p->t_ndays && y < 430; d++) {
+    for (int d = 0; d < p->t_ndays; d++) {
         if (!p->t_days[d].nev) continue;
-        d_text(F13, K_ACTIVE, LV_OPA_COVER, 32, y + 10, 0, p->t_days[d].label);
-        y += 28;
-        for (int i = 0; i < p->t_days[d].nev && y < 446; i++) {
-            uint8_t st = p->t_days[d].ev[i].state;   // 0 прошло, 1 сейчас, 2 впереди, 3 весь день
+        d_text(F13, K_ACTIVE, LV_OPA_COVER, 40, y, 0,
+               p->t_days[d].label[0] ? p->t_days[d].label : d == 0 ? "События сегодня" : "Завтра");
+        y += 14;
+        for (int i = 0; i < p->t_days[d].nev; i++) {
+            uint8_t st = p->t_days[d].ev[i].state;
             uint32_t ink = st == 0 ? K_DIM : K_INK;
             uint32_t dot = p->t_days[d].ev[i].color;
-            d_circle(42, y + 10, 5, dot ? dot : K_ACTIVE, LV_OPA_COVER);
-            snprintf(b, sizeof(b), "%s%s%s", p->t_days[d].ev[i].time,
-                     p->t_days[d].ev[i].end[0] ? "–" : "", p->t_days[d].ev[i].end);
-            d_text(F13, K_DIM, LV_OPA_COVER, 58, y + 15, 0, b);
-            d_text(F17, ink, LV_OPA_COVER, 160, y + 16, 0, p->t_days[d].ev[i].text);
-            y += 32;
+            d_circle(52, y + 15, 4, dot ? dot : K_ACTIVE, LV_OPA_COVER);
+            d_text(F17, ink, LV_OPA_COVER, 96, y + 22, 2, p->t_days[d].ev[i].time);
+            y += d_text_wrap(F17, ink, 112, y + 22, 334, p->t_days[d].ev[i].text, 3, 21) + 10;
         }
-        y += 6;
+        y += 4;
+    }
+    s_today_scroll_max = LV_MAX(0, y + s_today_scroll - 458);
+    if (s_today_scroll_max > 0) {
+        // индикатор прокрутки справа
+        int full = y + s_today_scroll - 92;
+        int th = LV_MAX(30, 360 * 360 / full);
+        int ty = 92 + (int)((452 - 92 - th) * (float)s_today_scroll / s_today_scroll_max);
+        d_rect(472, ty, 4, th, 2, K_DIM, 140);
     }
     d_head(p, false, true);
 }
@@ -1708,6 +1927,8 @@ static void touch_cb(lv_event_t *e)
         s_moved = false;
         int id = s_pz >= 0 ? s_z[s_pz].id : Z_NONE;
         s_drag = id == Z_SCALE || id == Z_DIAL || id == Z_SCENE || id == Z_LIGHT;
+        s_today_drag = p->kind == PAD_TODAY && id == Z_NONE;
+        s_today_scroll0 = s_today_scroll;
         s_v0 = p->kind == PAD_COVER ? shown_pos(p) : p->has_target ? p->v_target : (p->min + p->max) / 2;
         s_scale_shown = s_v0;
         s_l_axis = 0;
@@ -1722,6 +1943,11 @@ static void touch_cb(lv_event_t *e)
         if (abs(dx) > DRAG_SLOP || abs(dy) > DRAG_SLOP) {
             if (!s_moved) redraw();       // снять подсветку кнопки
             s_moved = true;
+        }
+        if (s_today_drag) {
+            s_today_scroll = (int)clampf(s_today_scroll0 - (pt.y - s_p0.y), 0, s_today_scroll_max);
+            redraw();
+            return;
         }
         if (!s_drag) return;
         p->touch_ms = lv_tick_get();
@@ -1766,6 +1992,11 @@ static void touch_cb(lv_event_t *e)
     if (code == LV_EVENT_RELEASED || code == LV_EVENT_PRESS_LOST) {
         int pz = s_pz;
         s_pz = -1;
+        if (s_today_drag) {
+            s_today_drag = false;
+            redraw();
+            return;
+        }
         if (s_drag) {
             s_drag = false;
             if (s_moved && code == LV_EVENT_RELEASED) {
@@ -2250,7 +2481,7 @@ static void tile_tv(const pad_t *p, int x, int y, int w, int h)
         d_text(P_F12, K_DIM, LV_OPA_COVER, x + w / 2.0f, y + h - PS(10), 1, p->app_now);
 }
 
-// Протечки на плитке: спокойно - «Сухо · N датчика», мокро - красным (с 0.11).
+// Протечки на плитке: низкая плитка - список всех датчиков, высокая - сводка (с 0.11).
 static void tile_leak(const pad_t *p, int x, int y, int w, int h)
 {
     int wet = 0;
@@ -2258,8 +2489,33 @@ static void tile_leak(const pad_t *p, int x, int y, int w, int h)
         if (p->sensors[i].wet) wet++;
     char b[96];
     upcase(b, sizeof(b), p->title ? p->title : "");
-    d_text(P_F12, K_DIM, LV_OPA_COVER, x + PS(12), y + PS(20), 0, b);
     uint32_t col = p->alarm_on || wet ? LEAK_RED : LEAK_GREEN;
+
+    // Половинная высота (h:0.5): все датчики строками мелким шрифтом,
+    // заголовок плитки здесь не рисуем - место дороже.
+    if (h < PS(96) && p->nsensors) {
+        int n = p->nsensors;
+        int row = (h - PS(6)) / n;
+        if (row > PS(17)) row = PS(17);
+        lv_area_t clip_old = L->_clip_area, ta = {x + PS(2), y, x + w - PS(3), y + h - 1}, cl;
+        bool clipped = lv_area_intersect(&cl, &clip_old, &ta);
+        if (clipped) L->_clip_area = cl;
+        for (int i = 0; i < n; i++) {
+            int ry = y + PS(3) + i * row;
+            uint32_t c = p->sensors[i].wet ? LEAK_RED : K_INK;
+            d_circle(x + PS(14), ry + row / 2.0f, PS(3),
+                     p->sensors[i].wet ? LEAK_RED : LEAK_GREEN, LV_OPA_COVER);
+            d_text_ellipsize(P_F12, c, x + PS(24), ry + row / 2.0f + PS(4), 0,
+                             w - PS(96), p->sensors[i].title ? p->sensors[i].title : "?");
+            d_text(P_F12, p->sensors[i].wet ? LEAK_RED : K_DIM, LV_OPA_COVER,
+                   x + w - PS(12), ry + row / 2 + PS(4), 2,
+                   p->sensors[i].wet ? "мокро" : "сухо");
+        }
+        if (clipped) L->_clip_area = clip_old;
+        return;
+    }
+
+    d_text(P_F12, K_DIM, LV_OPA_COVER, x + PS(12), y + PS(20), 0, b);
     d_icon(icon_path("leak"), x + w / 2.0f, y + h * 0.42f, PS(40), 2.6f * s_tile_scale,
            col, LV_OPA_COVER);
     if (p->alarm_on) {
@@ -2290,10 +2546,11 @@ static void tile_leak(const pad_t *p, int x, int y, int w, int h)
     }
 }
 
-// Погода на плитке: значок, температура, описание, мин/макс и спарклайн (с 0.11).
+// Погода на плитке: значок, температура, описание, влажность/давление/ветер,
+// мин/макс и спарклайн суточного хода (с 0.11).
 static void tile_weather(const pad_t *p, int x, int y, int w, int h)
 {
-    char b[48];
+    char b[80];
     upcase(b, sizeof(b), p->title ? p->title : "");
     d_text(P_F12, K_DIM, LV_OPA_COVER, x + PS(12), y + PS(20), 0, b);
     int hour = ui_hour_now();
@@ -2303,13 +2560,22 @@ static void tile_weather(const pad_t *p, int x, int y, int w, int h)
     else snprintf(b, sizeof(b), "--");
     int wn = text_w(P_F32, b), wd = text_w(P_F17, "°");
     d_num_deg(P_F32, P_F17, K_INK, x + PS(12) + (wn + wd) / 2.0f, y + PS(62), -PS(14), b, "°");
-    if (p->w_desc[0]) d_text(P_F12, K_DIM, LV_OPA_COVER, x + PS(12), y + PS(80), 0, p->w_desc);
+    if (p->w_desc[0])
+        d_text_ellipsize(P_F12, K_DIM, x + PS(12), y + PS(80), 0, w - PS(24), p->w_desc);
+    // текущие показатели строкой: влажность, давление, ветер
+    if (h >= PS(120)) {
+        b[0] = 0;
+        if (p->has_whum) snprintf(b + strlen(b), sizeof(b) - strlen(b), "влажн %.0f%%", p->w_hum);
+        if (p->has_wpress) snprintf(b + strlen(b), sizeof(b) - strlen(b), "%sдавл %.0f", b[0] ? " · " : "", p->w_press);
+        if (p->has_wwind) snprintf(b + strlen(b), sizeof(b) - strlen(b), "%sветер %.1f", b[0] ? " · " : "", p->w_wind);
+        if (b[0]) d_text(P_F12, 0xC8CACF, LV_OPA_COVER, x + PS(12), y + h - PS(28), 0, b);
+    }
     if (p->has_wt) {
         snprintf(b, sizeof(b), "мин %.0f°  макс %.0f°", p->w_tmin, p->w_tmax);
         d_text(P_F12, 0xC8CACF, LV_OPA_COVER, x + PS(12), y + h - PS(10), 0, b);
     }
-    // спарклайн суточного хода на широкой плитке
-    if (w >= PS(190) && p->n_t >= 2) {
+    // спарклайн суточного хода: под описанием, на всю ширину плитки
+    if (h >= PS(120) && p->n_t >= 2) {
         float lo = 1e9f, hi = -1e9f;
         for (int i = 0; i < p->n_t; i++) {
             if (isnan(p->s_t[i])) continue;
@@ -2317,7 +2583,7 @@ static void tile_weather(const pad_t *p, int x, int y, int w, int h)
             if (p->s_t[i] > hi) hi = p->s_t[i];
         }
         if (hi - lo < 2) { lo -= 1; hi += 1; }
-        float X0 = x + PS(104), X1 = x + w - PS(14), Y0 = y + PS(46), Y1 = y + PS(76);
+        float X0 = x + PS(12), X1 = x + w - PS(14), Y0 = y + PS(92), Y1 = y + h - PS(66);
         lv_area_t clip_old = L->_clip_area, ta = {x + PS(2), y + PS(2), x + w - PS(3), y + h - PS(3)}, cl;
         if (lv_area_intersect(&cl, &clip_old, &ta)) {
             L->_clip_area = cl;
@@ -2335,7 +2601,7 @@ static void tile_weather(const pad_t *p, int x, int y, int w, int h)
     }
 }
 
-// «Сегодня» на плитке: дата, счёт дел, события точками (с 0.11).
+// «Сегодня» на плитке: задания строками с переносом, сколько помещается (с 0.11).
 static void tile_today(const pad_t *p, int x, int y, int w, int h)
 {
     char b[80];
@@ -2343,35 +2609,44 @@ static void tile_today(const pad_t *p, int x, int y, int w, int h)
     d_text(P_F12, K_DIM, LV_OPA_COVER, x + PS(12), y + PS(20), 0, b);
     if (p->t_date[0]) d_text(P_F12, K_DIM, LV_OPA_COVER, x + w - PS(12), y + PS(20), 2, p->t_date);
     if (!p->has_feed) return;
-    int yy = y + PS(40);
-    if (p->t_ntasks) {
-        snprintf(b, sizeof(b), "Дела: %d", p->t_ntasks);
-        d_text(P_F13, K_ACTIVE, LV_OPA_COVER, x + PS(12), yy + PS(4), 0, b);
-        yy += PS(22);
-    }
-    int maxshow = (y + h - PS(16) - yy) / PS(18);
-    if (maxshow < 0) maxshow = 0;
-    int shown = 0, total = 0;
+    int yy = y + PS(32);
+    int ylim = y + h - PS(8);
+    int total = p->t_ntasks;
     for (int d = 0; d < p->t_ndays; d++)
         total += p->t_days[d].nev;
+    int shown = 0;
     lv_area_t clip_old = L->_clip_area, ta = {x + PS(2), y, x + w - PS(3), y + h - 1}, cl;
     bool clipped = lv_area_intersect(&cl, &clip_old, &ta);
     if (clipped) L->_clip_area = cl;
-    for (int d = 0; d < p->t_ndays && shown < maxshow; d++) {
-        for (int i = 0; i < p->t_days[d].nev && shown < maxshow; i++) {
+    const lv_font_t *f = P_F12;
+    int lh = PS(15), maxw = w - PS(44);
+    // задачи - первыми, каждая со своим переносом
+    for (int i = 0; i < p->t_ntasks; i++) {
+        int need = wrap_measure(f, p->t_tasks[i], maxw, 2) * lh + PS(6);
+        if (yy + need > ylim) goto rest;
+        d_border(x + PS(13), yy + PS(3), PS(9), PS(9), LV_RADIUS_CIRCLE, PL(1), K_DIM, LV_OPA_COVER);
+        yy += d_text_wrap(f, K_INK, x + PS(30), yy + PS(12), maxw, p->t_tasks[i], 2, lh) + PS(6);
+        shown++;
+    }
+    // события - точками
+    for (int d = 0; d < p->t_ndays; d++) {
+        for (int i = 0; i < p->t_days[d].nev; i++) {
+            int need = wrap_measure(f, p->t_days[d].ev[i].text, maxw - PS(54), 2) * lh + PS(4);
+            if (yy + need > ylim) goto rest;
             uint8_t st = p->t_days[d].ev[i].state;
             uint32_t ink = st == 0 ? K_DIM : K_INK;
             uint32_t dot = p->t_days[d].ev[i].color;
-            d_circle(x + PS(17), yy + PS(6), PS(3), dot ? dot : K_ACTIVE, LV_OPA_COVER);
-            d_text(P_F12, K_DIM, LV_OPA_COVER, x + PS(28), yy + PS(10), 0, p->t_days[d].ev[i].time);
-            d_text(P_F13, ink, LV_OPA_COVER, x + PS(88), yy + PS(11), 0, p->t_days[d].ev[i].text);
-            yy += PS(18);
+            d_circle(x + PS(17), yy + PS(5), PS(3), dot ? dot : K_ACTIVE, LV_OPA_COVER);
+            d_text(f, K_DIM, LV_OPA_COVER, x + PS(28), yy + PS(9), 0, p->t_days[d].ev[i].time);
+            yy += d_text_wrap(f, ink, x + PS(76), yy + PS(10), w - PS(90),
+                              p->t_days[d].ev[i].text, 2, lh) + PS(4);
             shown++;
         }
     }
-    if (total > shown && maxshow > 0) {
+rest:
+    if (total > shown && yy + PS(14) <= ylim) {
         snprintf(b, sizeof(b), "ещё %d", total - shown);
-        d_text(P_F12, K_DIM, LV_OPA_COVER, x + PS(28), yy + PS(10), 0, b);
+        d_text(f, K_DIM, LV_OPA_COVER, x + PS(30), yy + PS(12), 0, b);
     }
     if (clipped) L->_clip_area = clip_old;
 }
@@ -2439,6 +2714,9 @@ void pad_open(pad_t *p)
     s_sheet = 0;
     s_nz = 0;
     s_l_axis = 0;
+    s_today_scroll = 0;
+    s_today_scroll_max = 0;
+    s_today_drag = false;
     s_scale_shown = p->has_target ? p->v_target : (p->min + p->max) / 2;
     s_prev = lv_screen_active();
     s_root = lv_obj_create(NULL);

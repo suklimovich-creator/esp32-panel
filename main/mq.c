@@ -44,9 +44,10 @@ static void on_event(void *arg, esp_event_base_t base, int32_t id, void *data)
         ui_net_changed();
         break;
     case MQTT_EVENT_DATA: {
-        // Длинные сообщения приходят частями; значениям плиток это не грозит.
+        // Длинные сообщения приходят частями; значениям плиток это не грозит
+        // (буфер ниже с запасом на ряды прогноза погоды, с 0.10).
         if (e->current_data_offset != 0 || e->data_len != e->total_data_len) break;
-        char topic[160], value[128];
+        char topic[160], value[384];
         int tl = e->topic_len < (int)sizeof(topic) - 1 ? e->topic_len : (int)sizeof(topic) - 1;
         int vl = e->data_len < (int)sizeof(value) - 1 ? e->data_len : (int)sizeof(value) - 1;
         memcpy(topic, e->topic, tl);
@@ -83,7 +84,7 @@ void mq_start(void)
         .credentials.client_id = g_cfg.name,
         .session.keepalive = 30,
         .network.reconnect_timeout_ms = 5000,
-        .buffer.size = 1024,
+        .buffer.size = 2048,
         .task.stack_size = 6144,
     };
     s_client = esp_mqtt_client_init(&cfg);

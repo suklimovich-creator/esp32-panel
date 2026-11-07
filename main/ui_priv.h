@@ -32,6 +32,11 @@ void camera_reset(void);
 typedef struct pad pad_t;
 struct cJSON;
 pad_t *pad_parse(const struct cJSON *tile, const char *title);
+// Пульты без поля "pad" в контракте (с 0.11): погода и «Сегодня» - данные
+// в полях самой плитки.
+pad_t *weather_parse(const struct cJSON *tile, const char *title);
+pad_t *today_parse(const struct cJSON *tile, const char *title);
+bool pad_today_json(pad_t *p, const char *json);                 // лента дел и событий
 void pad_topics(const pad_t *p, void (*cb)(const char *topic, void *ctx), void *ctx);
 bool pad_on_value(pad_t *p, const char *topic, const char *value);   // true - сменилось питание
 bool pad_power(const pad_t *p, bool *on);                             // false - питание неизвестно
@@ -55,6 +60,12 @@ chart_t *charts_at(int index);
 void chart_draw_tile(const chart_t *c, int x, int y, int w, int h, bool pressed, float scale);
 void chart_open(chart_t *c);
 void chart_redraw_open(void);
+void chart_close(void);
+
+// Ленты «Сегодня» (tiles.c): адреса data из раскладки и кэш ответов (с 0.11).
+int today_feeds_count(void);
+const char *today_feed_path(int index);
+void today_feed_set_json(int index, const char *json);   // запомнить и обновить пульт
 
 // Рисование на слое (pads.c): сначала gfx_begin со слоем события отрисовки.
 void gfx_begin(lv_layer_t *layer);

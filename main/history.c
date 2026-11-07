@@ -1,5 +1,5 @@
-// Фоновая загрузка истории графиков из wb-svg-panel.
-// MQTT по-прежнему даёт текущие значения; здесь только HTTP и точки history.
+// Фоновая загрузка истории графиков и лент «Сегодня» из wb-svg-panel.
+// MQTT по-прежнему даёт текущие значения; здесь только HTTP.
 #include <string.h>
 #include <stdlib.h>
 #include "freertos/FreeRTOS.h"
@@ -14,6 +14,16 @@
 #define HISTORY_MAX_LEN (256 * 1024)
 
 static const char *TAG = "history";
+
+static void make_url(char *url, size_t size, const char *path)
+{
+    if (!strncmp(path, "http://", 7) || !strncmp(path, "https://", 8)) {
+        snprintf(url, size, "%s", path);
+    } else {
+        // panel_url оканчивается на /, адреса в раскладке начинаются с /api/...
+        snprintf(url, size, "%s%s", g_cfg.panel_url, path + (path[0] == '/'));
+    }
+}
 
 static char *http_get(const char *url, int *status)
 {
@@ -65,12 +75,7 @@ static void fetch_chart(chart_t *chart)
     const char *path = chart_history_path(chart);
     if (!path || !path[0]) return;
     char url[320];
-    if (!strncmp(path, "http://", 7) || !strncmp(path, "https://", 8)) {
-        snprintf(url, sizeof(url), "%s", path);
-    } else {
-        // panel_url оканчивается на /, history начинается с /api/...
-        snprintf(url, sizeof(url), "%s%s", g_cfg.panel_url, path + (path[0] == '/'));
-    }
+    make_url(url, sizeof(url), path);
     int status = 0;
     char *json = http_get(url, &status);
     if (!json || status != 200) {
@@ -80,6 +85,27 @@ static void fetch_chart(chart_t *chart)
     }
     if (ui_lock(1000)) {
         if (chart_history_json(chart, json)) tiles_history_updated();
+        ui_unlock();
+    }
+    free(json);
+}
+
+// Лента дел и событий плитки «Сегодня» (с 0.11), адрес - как у графиков.
+static void fetch_today(int i)
+{
+    const char *path = today_feed_path(i);
+    if (!path || !path[0]) return;
+    char url[320];
+    make_url(url, sizeof(url), path);
+    int status = 0;
+    char *json = http_get(url, &status);
+    if (!json || status != 200) {
+        ESP_LOGW(TAG, "%s: HTTP %d", path, status);
+        free(json);
+        return;
+    }
+    if (ui_lock(1000)) {
+        today_feed_set_json(i, json);
         ui_unlock();
     }
     free(json);
@@ -99,6 +125,7 @@ static void history_task(void *arg)
         net_get_status(&ns);
         if (ns.sta_connected && !ota_busy()) {
             for (int i = 0; i < charts_count(); i++) fetch_chart(charts_at(i));
+            for (int i = 0; i < today_feeds_count(); i++) fetch_today(i);
         }
         vTaskDelay(pdMS_TO_TICKS(HISTORY_EVERY_MS));
     }
@@ -106,6 +133,6 @@ static void history_task(void *arg)
 
 void history_start(void)
 {
-    if (!g_cfg.panel_url[0] || !charts_count()) return;
+    if (!g_cfg.panel_url[0] || (!charts_count() && !today_feeds_count())) return;
     xTaskCreate(history_task, "history", 6144, NULL, 2, NULL);
 }

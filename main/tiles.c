@@ -14,6 +14,15 @@
 //             [active] - канал «работает», [note] - подпись без данных,
 //             [invert] - значение 0-100 показывать наоборот (шторы),
 //             [pad] - пульт по нажатию (pads.c); с ним плитка рисует прибор
+//   scenes  - набор сцен сеткой (с 0.11): items [{title, icon, cmd, payload,
+//             level}]; нажатие на клавишу публикует payload в cmd
+//   tv      - телевизор (с 0.11): [pad] kind=tv; плитку и пульт рисует pads.c
+//   leak    - протечки (с 0.11): sensors, [alarm], pad kind=leak
+//   weather - погода (с 0.11): каналы и ряды прогноза из MQTT
+//   today   - «Сегодня» (с 0.11): дела и события приходят лентой по адресу
+//             data (как точки графиков), кэшируются в tiles.c
+// У диммера с полем pad (kind=light, с 0.10) долгое нажатие открывает пульт
+// света: яркость и теплота детально.
 // Явные адреса команд (с сервера, например Sprut.hub): state_cmd,
 // level_cmd, temp_cmd; у выключателя - cmd. У выключателя бывает invert.
 // У всех: title, w - ширина в колонках с шагом 0.5 (диммер по умолчанию
@@ -24,17 +33,22 @@
 //
 // Жесты как у панели: нажатие - включить/выключить (сцена - нажать, сводка -
 // открыть пульт); диммер - провести вверх ярче (широкий - вправо), лента -
-// вбок теплее/холоднее.
+// вбок теплее/холоднее; долгое нажатие на диммере с пультом - пульт света.
+// Секция screensaver раскладки - заставка (с 0.11): отдельный экран со своими
+// страницами, включается сама после after секунд тишины, листается по every,
+// гаснет от касания; перед заставкой закрываются пульт и график.
 #include <string.h>
 #include <stdlib.h>
 #include <stdio.h>
 #include <stdint.h>
 #include <math.h>
+#include <time.h>
 #include "esp_log.h"
 #include "esp_heap_caps.h"
 #include "cJSON.h"
 #include "app.h"
 #include "ui_priv.h"
+#include "src/misc/lv_area_private.h"
 
 static const char *TAG = "tiles";
 
@@ -61,9 +75,12 @@ static const char *TAG = "tiles";
 #define T_DIM    0x8E8E90
 #define T_TRACK  0x3A3B40
 
-typedef enum { T_SWITCH, T_DIMMER, T_SCENE, T_SENSOR, T_INFO, T_CHART, T_CAMERA, T_UNKNOWN } ttype_t;
+typedef enum { T_SWITCH, T_DIMMER, T_SCENE, T_SENSOR, T_INFO, T_CHART, T_CAMERA,
+               T_SCENES, T_TV, T_LEAK, T_WEATHER, T_TODAY, T_UNKNOWN } ttype_t;
 
 #define MAX_LINES 3
+#define MAX_KEYS 12             // клавиш в наборе сцен
+#define MAX_TODAY 4             // плиток «Сегодня» на раскладку
 
 typedef struct {
     char *label, *topic, *unit;
@@ -84,10 +101,14 @@ typedef struct {
     info_line_t lines[MAX_LINES];
     int nlines;
     char val[40];                   // основное значение для показа
-    pad_t *pad;                     // пульт по нажатию (info)
+    pad_t *pad;                     // пульт по нажатию (info, dimmer, tv, leak, weather, today)
     chart_t *chart;                 // история и график по нажатию (chart)
     camera_t *camera;               // JPEG/MJPEG по нажатию (camera)
     char *snapshot, *stream;        // относительные адреса wb-svg-panel
+    // набор сцен (с 0.11)
+    struct { char *title, *icon, *cmd, *payload; float level; } keys[MAX_KEYS];
+    int nkeys, key_flash;           // key_flash - какая вспыхнула после команды
+    int key_pressed;                // какая клавиша под пальцем, -1 - нет
     int lvl, tmp;
     lv_obj_t *card;
     // касание
@@ -103,6 +124,24 @@ static lv_obj_t *s_pages[MAX_PAGES], *s_tabs[MAX_PAGES];
 static int s_npages;
 static int s_cols = 3, s_col_w = BASE_COL_W, s_row_h = BASE_COL_W, s_gap = BASE_GAP;
 static float s_scale = 1.0f;
+
+// Заставка (с 0.11): отдельный экран со своими страницами плиток.
+static tile_t *s_tiles2;
+static int s_count2;
+static lv_obj_t *s_pages2[MAX_PAGES];
+static int s_npages2;
+static lv_obj_t *s_saver_scr, *s_saver_clock, *s_home;
+static int s_saver_after, s_saver_every;   // секунды, 0 - нет заставки
+static bool s_saver_on;
+static int s_saver_page;
+static uint32_t s_last_cycle;
+
+// Ленты «Сегодня» (с 0.11): адреса data из раскладки и кэш ответов.
+static char *s_today_paths[MAX_TODAY];
+static char *s_today_json[MAX_TODAY];
+static pad_t *s_today_pads[MAX_TODAY];
+static tile_t *s_today_tiles[MAX_TODAY];
+static int s_today_n;
 
 static int TS(int v) { return (int)lroundf(v * s_scale); }
 static int TL(float v) { int n = (int)lroundf(v * s_scale); return n > 0 ? n : 1; }
@@ -485,6 +524,70 @@ static void draw_unknown(const tile_t *t, int x, int y, int w, int h)
     d_text(T_F12, T_DIM, LV_OPA_COVER, x + TS(12), y + TS(46), 0, "тип не поддерживается");
 }
 
+// Набор сцен: клавиши сеткой 3 столбца (больше 9 - 4), яркость сцены -
+// подложкой снизу клавиши (с 0.11).
+static int scenes_cols(const tile_t *t) { return t->nkeys > 9 ? 4 : 3; }
+
+static bool scene_key_rect(const tile_t *t, int x, int y, int w, int h, int i, lv_area_t *r)
+{
+    int cols = scenes_cols(t);
+    int rows = (t->nkeys + cols - 1) / cols;
+    int gx = TS(8), gy = TS(6);
+    int top = y + TS(26);
+    int kw = (w - TS(24) - (cols - 1) * gx) / cols;
+    int kh = (y + h - TS(8) - top - (rows - 1) * gy) / rows;
+    if (kh < TS(16)) return false;
+    r->x1 = x + TS(12) + (i % cols) * (kw + gx);
+    r->y1 = top + (i / cols) * (kh + gy);
+    r->x2 = r->x1 + kw;
+    r->y2 = r->y1 + kh;
+    return true;
+}
+
+static int scene_key_at(const tile_t *t, lv_point_t p)
+{
+    lv_area_t a;
+    lv_obj_get_coords(t->card, &a);
+    for (int i = 0; i < t->nkeys; i++) {
+        lv_area_t r;
+        if (scene_key_rect(t, a.x1, a.y1, lv_area_get_width(&a), lv_area_get_height(&a), i, &r) &&
+            lv_area_is_point_on(&r, &p, 0)) return i;
+    }
+    return -1;
+}
+
+static void draw_scenes(const tile_t *t, int x, int y, int w, int h)
+{
+    d_card(x, y, w, h, false, false);
+    d_text_fit(T_F12, T_DIM, x + TS(12), y + TS(19), w - TS(24), t->title);
+    for (int i = 0; i < t->nkeys; i++) {
+        lv_area_t r;
+        if (!scene_key_rect(t, x, y, w, h, i, &r)) continue;
+        int kw = lv_area_get_width(&r), kh = lv_area_get_height(&r);
+        bool act = t->key_flash == i || (t->pressed && t->key_pressed == i);
+        d_rect(r.x1, r.y1, kw, kh, TS(10), act ? 0x4D3B22 : 0x2B2C30, LV_OPA_COVER);
+        d_border(r.x1, r.y1, kw, kh, TS(10), TL(1), act ? T_ACT : 0x3A3B40, LV_OPA_COVER);
+        if (t->keys[i].level > 0.01f) {
+            int lw = (int)((kw - TS(16)) * (t->keys[i].level > 1 ? 1 : t->keys[i].level));
+            d_rect(r.x1 + TS(8), r.y2 - TS(6), lw, TS(3), TS(2), T_ACT, 140);
+        }
+        const char *ic = icon_path(t->keys[i].icon ? t->keys[i].icon : "power");
+        if (ic && kh >= TS(38))
+            d_icon(ic, r.x1 + TS(8) + TS(10), r.y1 + kh / 2.0f, TS(20), 1.8f * s_scale,
+                   T_INK, LV_OPA_COVER);
+        int tx = ic && kh >= TS(38) ? r.x1 + TS(38) : r.x1 + TS(8);
+        d_text_fit(T_F12, T_INK, tx, r.y1 + kh / 2.0f + TS(4), r.x2 - tx - TS(6), t->keys[i].title);
+    }
+}
+
+// Телевизор, протечки, погода, «Сегодня»: карточка, содержимое - pads.c (с 0.11).
+static void draw_pad_tile(const tile_t *t, int x, int y, int w, int h)
+{
+    d_card(x, y, w, h, t->pad && pad_active(t->pad), false);
+    if (t->pad) pad_tile(t->pad, x, y, w, h, C_BG, s_scale);
+    if (t->pressed) d_rect(x, y, w, h, TS(14), 0xFFFFFF, 18);
+}
+
 static void tile_draw_cb(lv_event_t *e)
 {
     tile_t *t = lv_event_get_user_data(e);
@@ -499,10 +602,12 @@ static void tile_draw_cb(lv_event_t *e)
         else draw_light_strip(t, x, y, w, h);
         break;
     case T_SCENE: draw_scene(t, x, y, w, h); break;
+    case T_SCENES: draw_scenes(t, x, y, w, h); break;
     case T_SENSOR: draw_sensor(t, x, y, w, h); break;
     case T_INFO: draw_info(t, x, y, w, h); break;
     case T_CHART: chart_draw_tile(t->chart, x, y, w, h, t->pressed, s_scale); break;
     case T_CAMERA: d_card(x, y, w, h, false, t->pressed); break;
+    case T_TV: case T_LEAK: case T_WEATHER: case T_TODAY: draw_pad_tile(t, x, y, w, h); break;
     default: draw_unknown(t, x, y, w, h); break;
     }
 }
@@ -526,7 +631,18 @@ static void scene_restore(lv_timer_t *tm)
 {
     tile_t *t = lv_timer_get_user_data(tm);
     t->flash = false;
+    t->key_flash = -1;
     tile_redraw(t);
+}
+
+// Клавиша набора сцен: команда и вспышка, как у одиночной сцены (с 0.11).
+static void scene_press(tile_t *t, int i)
+{
+    if (i < 0 || i >= t->nkeys) return;
+    mq_publish(t->keys[i].cmd, t->keys[i].payload ? t->keys[i].payload : "1");
+    t->key_flash = i;
+    lv_timer_t *tm = lv_timer_create(scene_restore, 600, t);
+    lv_timer_set_repeat_count(tm, 1);
 }
 
 static void click(tile_t *t)
@@ -544,7 +660,22 @@ static void click(tile_t *t)
         break;
     }
     case T_INFO:
+    case T_TV:
+    case T_LEAK:
+    case T_WEATHER:
         if (t->pad) pad_open(t->pad);
+        break;
+    case T_TODAY:
+        if (t->pad) {
+            pad_open(t->pad);
+            // уже пришедшая лента - сразу на экран
+            for (int i = 0; i < s_today_n; i++) {
+                if (s_today_pads[i] == t->pad && s_today_json[i]) {
+                    pad_today_json(t->pad, s_today_json[i]);
+                    break;
+                }
+            }
+        }
         break;
     case T_CHART:
         if (t->chart) chart_open(t->chart);
@@ -609,10 +740,18 @@ static void tile_touch_cb(lv_event_t *e)
         t->pressed = true;
         t->dragging = t->dragged = false;
         t->p0 = p;
+        if (t->type == T_SCENES) t->key_pressed = in ? scene_key_at(t, p) : -1;
         tile_redraw(t);
         break;
     case LV_EVENT_PRESSING:
         if (t->type == T_DIMMER && in) drag(t, p, false);
+        break;
+    case LV_EVENT_LONG_PRESSED:
+        // Долгое нажатие на диммере/ленте с пультом - пульт света (с 0.11).
+        if (t->type == T_DIMMER && t->pad && !t->dragged) {
+            t->dragged = true;   // отпускание не переключает
+            pad_open(t->pad);
+        }
         break;
     case LV_EVENT_RELEASED:
         if (t->dragging && in) drag(t, p, true);
@@ -621,11 +760,16 @@ static void tile_touch_cb(lv_event_t *e)
         break;
     case LV_EVENT_PRESS_LOST:
         t->pressed = t->dragging = false;
+        t->key_pressed = -1;
         tile_redraw(t);
         break;
     case LV_EVENT_CLICKED:
-        if (!t->dragged) click(t);
+        if (!t->dragged) {
+            if (t->type == T_SCENES) scene_press(t, in ? scene_key_at(t, p) : -1);
+            else click(t);
+        }
         t->dragged = false;
+        t->key_pressed = -1;
         tile_redraw(t);
         break;
     default:
@@ -666,9 +810,12 @@ static void parse_tile(tile_t *t, const cJSON *o)
     const cJSON *ty = cJSON_GetObjectItem(o, "type");
     const char *type = cJSON_IsString(ty) ? ty->valuestring : "";
     t->type = !strcmp(type, "switch") ? T_SWITCH : !strcmp(type, "dimmer") ? T_DIMMER
-            : !strcmp(type, "scene") ? T_SCENE : !strcmp(type, "sensor") ? T_SENSOR
-            : !strcmp(type, "info") ? T_INFO : !strcmp(type, "chart") ? T_CHART
-            : !strcmp(type, "camera") ? T_CAMERA : T_UNKNOWN;
+            : !strcmp(type, "scene") ? T_SCENE : !strcmp(type, "scenes") ? T_SCENES
+            : !strcmp(type, "sensor") ? T_SENSOR : !strcmp(type, "info") ? T_INFO
+            : !strcmp(type, "chart") ? T_CHART : !strcmp(type, "camera") ? T_CAMERA
+            : !strcmp(type, "tv") ? T_TV : !strcmp(type, "leak") ? T_LEAK
+            : !strcmp(type, "weather") ? T_WEATHER
+            : !strcmp(type, "today") ? T_TODAY : T_UNKNOWN;
     t->title = jstr(o, "title");
     if (!t->title) t->title = ps_strdup(type);
     t->state = jstr(o, "state");
@@ -727,6 +874,43 @@ static void parse_tile(tile_t *t, const cJSON *o)
         t->stream = jstr(o, "stream");
         if (!t->snapshot) t->type = T_UNKNOWN;
     }
+    if (t->type == T_SCENES) {
+        // Набор сцен (с 0.11): клавиши из items.
+        const cJSON *it;
+        cJSON_ArrayForEach(it, cJSON_GetObjectItem(o, "items")) {
+            if (t->nkeys >= MAX_KEYS) break;
+            char *cmd = jstr(it, "cmd");
+            if (!cmd) continue;
+            t->keys[t->nkeys].cmd = cmd;
+            t->keys[t->nkeys].title = jstr(it, "title");
+            t->keys[t->nkeys].icon = jstr(it, "icon");
+            t->keys[t->nkeys].payload = jstr(it, "payload");
+            const cJSON *lv = cJSON_GetObjectItem(it, "level");
+            t->keys[t->nkeys].level = cJSON_IsNumber(lv) ? (float)lv->valuedouble : 0;
+            t->nkeys++;
+        }
+        t->key_pressed = t->key_flash = -1;
+        if (!t->nkeys) t->type = T_UNKNOWN;
+    }
+    // Пульты новых типов (с 0.11): tv и leak - из поля pad, погода и
+    // «Сегодня» - из полей самой плитки. У диммера с pad - пульт света.
+    if (t->type == T_TV || t->type == T_LEAK) {
+        t->pad = pad_parse(o, t->title);
+        if (!t->pad) t->type = T_UNKNOWN;
+    } else if (t->type == T_WEATHER) {
+        t->pad = weather_parse(o, t->title);
+    } else if (t->type == T_TODAY) {
+        t->pad = today_parse(o, t->title);
+        char *data = jstr(o, "data");
+        if (data && s_today_n < MAX_TODAY) {
+            int i = s_today_n++;
+            s_today_paths[i] = data;
+            s_today_pads[i] = t->pad;
+            s_today_tiles[i] = t;
+        }
+    } else if (t->type == T_DIMMER) {
+        t->pad = pad_parse(o, t->title);   // NULL, если пульта нет
+    }
     if (t->type == T_DIMMER && !t->level) t->type = T_UNKNOWN;
     if (t->type == T_SCENE && !t->cmd) t->type = T_UNKNOWN;
     // Высота: h в рядах (0.5 - полряда). По умолчанию квадрат у ленты и
@@ -735,6 +919,8 @@ static void parse_tile(tile_t *t, const cJSON *o)
     if (t->type == T_DIMMER && t->w_cells == 2) def = 2;
     if (t->type == T_INFO && (t->value || t->pad || t->nlines)) def = 2;
     if (t->type == T_CHART || t->type == T_CAMERA) def = 2;
+    if (t->type == T_SCENES || t->type == T_TV || t->type == T_LEAK ||
+        t->type == T_WEATHER || t->type == T_TODAY) def = 2;
     t->h_cells = clampi(jcells(o, "h", def), 1, 4);
 }
 
@@ -791,6 +977,73 @@ static lv_obj_t *new_tab(lv_obj_t *tabbar, const char *title, int idx)
     return b;
 }
 
+// ------------------------------------------------------------ заставка (с 0.11)
+// Свой экран: страницы без вкладок, часы сверху справа, выход от касания.
+static void saver_show(int idx)
+{
+    for (int i = 0; i < s_npages2; i++) {
+        if (i == idx) lv_obj_remove_flag(s_pages2[i], LV_OBJ_FLAG_HIDDEN);
+        else lv_obj_add_flag(s_pages2[i], LV_OBJ_FLAG_HIDDEN);
+    }
+}
+
+static void saver_clock_tick(void)
+{
+    if (!s_saver_clock) return;
+    time_t now = time(NULL);
+    struct tm tmv;
+    localtime_r(&now, &tmv);
+    if (tmv.tm_year <= 120) return;   // время ещё не синхронизировано
+    char b[8];
+    snprintf(b, sizeof(b), "%02d:%02d", tmv.tm_hour, tmv.tm_min);
+    lv_label_set_text(s_saver_clock, b);
+}
+
+static void saver_exit(void)
+{
+    if (!s_saver_on) return;
+    s_saver_on = false;
+    if (s_home) lv_screen_load(s_home);
+}
+
+static void saver_touch_cb(lv_event_t *e)
+{
+    (void)e;
+    saver_exit();
+}
+
+static void saver_cb(lv_timer_t *tm)
+{
+    (void)tm;
+    if (!s_saver_scr) return;
+    uint32_t idle = lv_display_get_inactive_time(NULL);
+    if (!s_saver_on) {
+        if (idle >= (uint32_t)s_saver_after * 1000) {
+            // сначала закрыть открытые пульт и график
+            pad_close();
+            chart_close();
+            s_saver_on = true;
+            s_saver_page = 0;
+            saver_show(0);
+            s_last_cycle = lv_tick_get();
+            saver_clock_tick();
+            lv_screen_load(s_saver_scr);
+        }
+        return;
+    }
+    if (idle < 1000) {          // коснулись - выходим
+        saver_exit();
+        return;
+    }
+    saver_clock_tick();
+    if (s_saver_every > 0 && s_npages2 > 1 &&
+        lv_tick_get() - s_last_cycle >= (uint32_t)s_saver_every * 1000) {
+        s_last_cycle = lv_tick_get();
+        s_saver_page = (s_saver_page + 1) % s_npages2;
+        saver_show(s_saver_page);
+    }
+}
+
 void tiles_build(void *content_obj, void *tabbar_obj, const char *json)
 {
     lv_obj_t *content = content_obj, *tabbar = tabbar_obj;
@@ -825,6 +1078,8 @@ void tiles_build(void *content_obj, void *tabbar_obj, const char *json)
     s_tiles = heap_caps_calloc(total ? total : 1, sizeof(tile_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     s_count = 0;
     s_npages = 0;
+    s_today_n = 0;                     // реестр лент собирается заново
+    s_home = lv_screen_active();       // сюда возвращает заставка
 
     cJSON_ArrayForEach(pg, pages) {
         if (s_npages >= MAX_PAGES) break;
@@ -839,16 +1094,70 @@ void tiles_build(void *content_obj, void *tabbar_obj, const char *json)
             build_tile(s_pages[idx], t, idx);
         }
     }
+
+    // Заставка (с 0.11): свои страницы на отдельном экране, без вкладок.
+    // Плитки заставки только показывают состояние: касание - выход.
+    const cJSON *sv = cJSON_GetObjectItem(root, "screensaver");
+    s_saver_after = cJSON_IsObject(sv) ? jint(sv, "after", 0) : 0;
+    s_saver_every = cJSON_IsObject(sv) ? jint(sv, "every", 0) : 0;
+    const cJSON *spages = cJSON_GetObjectItem(sv, "pages");
+    if (s_saver_after > 0 && cJSON_IsArray(spages) && cJSON_GetArraySize(spages) > 0) {
+        s_saver_scr = lv_obj_create(NULL);
+        lv_obj_remove_style_all(s_saver_scr);
+        lv_obj_set_style_bg_color(s_saver_scr, lv_color_hex(C_BG), 0);
+        lv_obj_set_style_bg_opa(s_saver_scr, LV_OPA_COVER, 0);
+        lv_obj_add_flag(s_saver_scr, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_remove_flag(s_saver_scr, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_add_event_cb(s_saver_scr, saver_touch_cb, LV_EVENT_PRESSED, NULL);
+        s_saver_clock = ui_label(s_saver_scr, f22, C_DIM, "--:--");
+        lv_obj_align(s_saver_clock, LV_ALIGN_TOP_RIGHT, -12, 15);
+        // контент повторяет главный экран: 480x424 от y=56
+        lv_obj_t *cont = lv_obj_create(s_saver_scr);
+        lv_obj_set_size(cont, 480, 424);
+        lv_obj_set_pos(cont, 0, 56);
+        lv_obj_set_style_bg_opa(cont, LV_OPA_TRANSP, 0);
+        lv_obj_set_style_border_width(cont, 0, 0);
+        lv_obj_set_style_radius(cont, 0, 0);
+        lv_obj_set_style_pad_all(cont, 0, 0);
+        lv_obj_remove_flag(cont, LV_OBJ_FLAG_SCROLLABLE);
+        int total2 = 0;
+        cJSON_ArrayForEach(pg, spages)
+            total2 += cJSON_GetArraySize(cJSON_GetObjectItem(pg, "tiles"));
+        s_tiles2 = heap_caps_calloc(total2 ? total2 : 1, sizeof(tile_t),
+                                    MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        s_count2 = 0;
+        s_npages2 = 0;
+        cJSON_ArrayForEach(pg, spages) {
+            if (s_npages2 >= MAX_PAGES) break;
+            int idx = s_npages2++;
+            s_pages2[idx] = new_page(cont);
+            lv_obj_remove_flag(s_pages2[idx], LV_OBJ_FLAG_SCROLLABLE);
+            if (idx) lv_obj_add_flag(s_pages2[idx], LV_OBJ_FLAG_HIDDEN);
+            const cJSON *o;
+            cJSON_ArrayForEach(o, cJSON_GetObjectItem(pg, "tiles")) {
+                tile_t *t = &s_tiles2[s_count2++];
+                parse_tile(t, o);
+                // индексы страниц заставки не пересекаются с основными:
+                // камеры на них не гоняют кадры зря
+                build_tile(s_pages2[idx], t, 100 + idx);
+                lv_obj_remove_flag(t->card, LV_OBJ_FLAG_CLICKABLE);
+            }
+        }
+        lv_timer_create(saver_cb, 500, NULL);
+        ESP_LOGI(TAG, "заставка: страниц %d, плиток %d, через %d с",
+                 s_npages2, s_count2, s_saver_after);
+    }
     cJSON_Delete(root);
     show_page(0);
     ESP_LOGI(TAG, "страниц: %d, плиток: %d", s_npages, s_count);
 }
 
-void tiles_for_each_topic(void (*cb)(const char *topic, void *ctx), void *ctx)
+static void set_topics(const tile_t *tiles, int count,
+                       void (*cb)(const char *topic, void *ctx), void *ctx)
 {
-    for (int i = 0; i < s_count; i++) {
-        tile_t *t = &s_tiles[i];
-        if (t->type == T_UNKNOWN || t->type == T_SCENE) continue;
+    for (int i = 0; i < count; i++) {
+        const tile_t *t = &tiles[i];
+        if (t->type == T_UNKNOWN || t->type == T_SCENE || t->type == T_SCENES) continue;
         // info может состоять из одних строк, без основного значения
         if (t->state) cb(t->state, ctx);
         if (t->level) cb(t->level, ctx);
@@ -859,6 +1168,12 @@ void tiles_for_each_topic(void (*cb)(const char *topic, void *ctx), void *ctx)
         if (t->pad) pad_topics(t->pad, cb, ctx);
         if (t->chart) chart_topics(t->chart, cb, ctx);
     }
+}
+
+void tiles_for_each_topic(void (*cb)(const char *topic, void *ctx), void *ctx)
+{
+    set_topics(s_tiles, s_count, cb, ctx);
+    set_topics(s_tiles2, s_count2, cb, ctx);
 }
 
 typedef struct { const char *topic; bool hit; } use_t;
@@ -874,79 +1189,93 @@ static bool pad_uses(const pad_t *p, const char *topic)
     return u.hit;
 }
 
+// Обновление одной плитки по значению топика.
+static void tile_on_value(tile_t *t, const char *topic, const char *value, uint32_t now)
+{
+    bool changed = false;
+    switch (t->type) {
+    case T_SWITCH:
+        if (t->state && !strcmp(topic, t->state)) {
+            t->on = t_truthy(value) != t->invert;
+            changed = true;
+        }
+        break;
+    case T_DIMMER:
+        if (t->state && !strcmp(topic, t->state)) {
+            t->on = t_truthy(value);
+            changed = true;
+        }
+        // пока ведут пальцем (и чуть после) эхо брокера не дёргает плитку
+        if (!strcmp(topic, t->level) && !t->dragging && now - t->level_touch >= ECHO_IGNORE_MS) {
+            t->lvl = atoi(value);
+            changed = true;
+        }
+        if (t->temp && !strcmp(topic, t->temp) && !t->dragging && now - t->temp_touch >= ECHO_IGNORE_MS) {
+            t->tmp = atoi(value);
+            changed = true;
+        }
+        if (t->pad) pad_on_value(t->pad, topic, value);   // пульт света держит свою копию
+        break;
+    case T_SENSOR:
+        if (t->value && !strcmp(topic, t->value)) {
+            fmt_val(t->val, sizeof(t->val), value, t->digits, NULL);
+            t->has_val = changed = true;
+        }
+        break;
+    case T_INFO: {
+        if (t->pad && pad_on_value(t->pad, topic, value)) changed = true;
+        if (t->value && !strcmp(topic, t->value)) {
+            char inv[16];
+            const char *v = value;
+            if (t->invert && !t->map) {
+                snprintf(inv, sizeof(inv), "%g", 100 - atof(value));
+                v = inv;
+            }
+            fmt_val(t->val, sizeof(t->val), v, t->digits, t->map);
+            t->has_val = changed = true;
+        }
+        for (int k = 0; k < t->nlines; k++) {
+            info_line_t *l = &t->lines[k];
+            if (strcmp(topic, l->topic)) continue;
+            char b[32];
+            fmt_val(b, sizeof(b), value, l->digits, l->map);
+            snprintf(l->text, sizeof(l->text), "%s%s%s%s", l->label ? l->label : "",
+                     l->label ? " " : "", b, l->unit ? l->unit : "");
+            changed = true;
+        }
+        if (t->active_topic && !strcmp(topic, t->active_topic)) {
+            t->active = t_truthy(value);
+            changed = true;
+        }
+        // значения пульта (уставка, положение) рисуются на плитке
+        if (t->pad && !changed) changed = pad_uses(t->pad, topic);
+        break;
+    }
+    case T_TV:
+    case T_LEAK:
+    case T_WEATHER:
+        // этими плитками целиком заведует пульт (pads.c)
+        if (t->pad) {
+            if (pad_on_value(t->pad, topic, value)) changed = true;
+            if (!changed) changed = pad_uses(t->pad, topic);
+        }
+        break;
+    case T_CHART:
+        if (t->chart) changed = chart_on_value(t->chart, topic, value);
+        if (changed) chart_redraw_open();
+        break;
+    default:
+        break;
+    }
+    if (changed) tile_redraw(t);
+}
+
 void tiles_on_value(const char *topic, const char *value)
 {
     if (!ui_lock(1000)) return;
     uint32_t now = lv_tick_get();
-    for (int i = 0; i < s_count; i++) {
-        tile_t *t = &s_tiles[i];
-        bool changed = false;
-        switch (t->type) {
-        case T_SWITCH:
-            if (t->state && !strcmp(topic, t->state)) {
-                t->on = t_truthy(value) != t->invert;
-                changed = true;
-            }
-            break;
-        case T_DIMMER:
-            if (t->state && !strcmp(topic, t->state)) {
-                t->on = t_truthy(value);
-                changed = true;
-            }
-            // пока ведут пальцем (и чуть после) эхо брокера не дёргает плитку
-            if (!strcmp(topic, t->level) && !t->dragging && now - t->level_touch >= ECHO_IGNORE_MS) {
-                t->lvl = atoi(value);
-                changed = true;
-            }
-            if (t->temp && !strcmp(topic, t->temp) && !t->dragging && now - t->temp_touch >= ECHO_IGNORE_MS) {
-                t->tmp = atoi(value);
-                changed = true;
-            }
-            break;
-        case T_SENSOR:
-            if (t->value && !strcmp(topic, t->value)) {
-                fmt_val(t->val, sizeof(t->val), value, t->digits, NULL);
-                t->has_val = changed = true;
-            }
-            break;
-        case T_INFO: {
-            if (t->pad && pad_on_value(t->pad, topic, value)) changed = true;
-            if (t->value && !strcmp(topic, t->value)) {
-                char inv[16];
-                const char *v = value;
-                if (t->invert && !t->map) {
-                    snprintf(inv, sizeof(inv), "%g", 100 - atof(value));
-                    v = inv;
-                }
-                fmt_val(t->val, sizeof(t->val), v, t->digits, t->map);
-                t->has_val = changed = true;
-            }
-            for (int k = 0; k < t->nlines; k++) {
-                info_line_t *l = &t->lines[k];
-                if (strcmp(topic, l->topic)) continue;
-                char b[32];
-                fmt_val(b, sizeof(b), value, l->digits, l->map);
-                snprintf(l->text, sizeof(l->text), "%s%s%s%s", l->label ? l->label : "",
-                         l->label ? " " : "", b, l->unit ? l->unit : "");
-                changed = true;
-            }
-            if (t->active_topic && !strcmp(topic, t->active_topic)) {
-                t->active = t_truthy(value);
-                changed = true;
-            }
-            // значения пульта (уставка, положение) рисуются на плитке
-            if (t->pad && !changed) changed = pad_uses(t->pad, topic);
-            break;
-        }
-        case T_CHART:
-            if (t->chart) changed = chart_on_value(t->chart, topic, value);
-            if (changed) chart_redraw_open();
-            break;
-        default:
-            break;
-        }
-        if (changed) tile_redraw(t);
-    }
+    for (int i = 0; i < s_count; i++) tile_on_value(&s_tiles[i], topic, value, now);
+    for (int i = 0; i < s_count2; i++) tile_on_value(&s_tiles2[i], topic, value, now);
     ui_unlock();
 }
 
@@ -955,5 +1284,26 @@ void tiles_history_updated(void)
 {
     for (int i = 0; i < s_count; i++)
         if (s_tiles[i].type == T_CHART) tile_redraw(&s_tiles[i]);
+    for (int i = 0; i < s_count2; i++)
+        if (s_tiles2[i].type == T_CHART) tile_redraw(&s_tiles2[i]);
     chart_redraw_open();
+}
+
+// ------------------------------------------------------------ ленты «Сегодня» (с 0.11)
+int today_feeds_count(void) { return s_today_n; }
+
+const char *today_feed_path(int i)
+{
+    return i >= 0 && i < s_today_n ? s_today_paths[i] : NULL;
+}
+
+void today_feed_set_json(int i, const char *json)
+{
+    if (i < 0 || i >= s_today_n || !json) return;
+    char *copy = ps_strdup(json);
+    if (!copy) return;
+    free(s_today_json[i]);
+    s_today_json[i] = copy;
+    if (s_today_pads[i]) pad_today_json(s_today_pads[i], copy);
+    if (s_today_tiles[i]) tile_redraw(s_today_tiles[i]);
 }

@@ -137,8 +137,21 @@ int main(int argc, char **argv)
             if (eq) { *eq = 0; tiles_on_value(line, eq + 1); }
         }
         if (argc > 5) show_page(atoi(argv[5]));
-        if (argc > 6 && charts_count()) chart_history_json(charts_at(0), readf(argv[6]));
+        if (argc > 6 && argv[6][0] != '-' && charts_count()) chart_history_json(charts_at(0), readf(argv[6]));
         if (argc > 7 && atoi(argv[7]) && charts_count()) chart_open(charts_at(0));
+        // [8] today.json - лента для первой плитки «Сегодня»
+        if (argc > 8 && argv[8][0] != '-' && today_feeds_count()) today_feed_set_json(0, readf(argv[8]));
+        // [9] N - открыть пульт N-й плитки (0 - первая)
+        if (argc > 9 && argv[9][0] != '-') {
+            int n = atoi(argv[9]);
+            if (n >= 0 && n < s_count && s_tiles[n].pad) pad_open(s_tiles[n].pad);
+        }
+        // [10] saver - показать заставку
+        if (argc > 10 && !strcmp(argv[10], "saver") && s_saver_scr) {
+            s_saver_on = true;
+            saver_show(0);
+            lv_screen_load(s_saver_scr);
+        }
         lv_refr_now(d);
         lv_refr_now(d);
         FILE *o = fopen(argv[4], "wb");

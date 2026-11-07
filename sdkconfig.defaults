@@ -61,6 +61,7 @@ CONFIG_LV_FONT_MONTSERRAT_14=y
 CONFIG_LV_FONT_MONTSERRAT_20=y
 CONFIG_LV_FONT_MONTSERRAT_28=y
 CONFIG_LV_USE_TINY_TTF=y
-CONFIG_LV_TINY_TTF_CACHE_GLYPH_CNT=128
+# В Kconfig LVGL 9.2 этот символ ошибочно объявлен bool, число проигнорируется;
+# без строки LVGL берёт свой размер кэша 256 (lv_conf_internal.h).
 CONFIG_LV_USE_QRCODE=y
 CONFIG_LV_ATTRIBUTE_FAST_MEM_USE_IRAM=y

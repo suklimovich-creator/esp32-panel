@@ -42,6 +42,7 @@ static chart_t *s_charts[CHART_MAX_TILES];
 static int s_charts_count;
 static chart_t *s_chart_open;
 static lv_obj_t *s_chart_root, *s_chart_prev;
+static lv_timer_t *s_chart_idle;
 
 static char *cstr(const char *s)
 {
@@ -489,6 +490,27 @@ static void chart_draw_full(lv_event_t *e)
                             "Нажмите стрелку, чтобы вернуться");
 }
 
+// Закрыть полноэкранный график (назад, заставка, таймаут).
+void chart_close(void)
+{
+    if (s_chart_idle) {
+        lv_timer_delete(s_chart_idle);
+        s_chart_idle = NULL;
+    }
+    if (s_chart_prev) lv_screen_load(s_chart_prev);
+    if (s_chart_root) lv_obj_delete_async(s_chart_root);
+    s_chart_root = NULL;
+    s_chart_open = NULL;
+}
+
+// Как у пультов: график закрывается сам, если к нему не прикасались (с 0.11).
+#define CHART_IDLE_MS 45000
+static void chart_idle_cb(lv_timer_t *t)
+{
+    (void)t;
+    if (lv_display_get_inactive_time(NULL) > CHART_IDLE_MS) chart_close();
+}
+
 static void chart_click(lv_event_t *e)
 {
     (void)e;
@@ -496,12 +518,7 @@ static void chart_click(lv_event_t *e)
     lv_indev_t *in = lv_indev_active();
     if (!in) return;
     lv_indev_get_point(in, &p);
-    if (p.x <= 84 && p.y <= 84) {
-        if (s_chart_prev) lv_screen_load(s_chart_prev);
-        if (s_chart_root) lv_obj_delete_async(s_chart_root);
-        s_chart_root = NULL;
-        s_chart_open = NULL;
-    }
+    if (p.x <= 84 && p.y <= 84) chart_close();
 }
 
 void chart_open(chart_t *c)
@@ -522,6 +539,7 @@ void chart_open(chart_t *c)
     lv_obj_remove_flag(s_chart_root, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_add_event_cb(s_chart_root, chart_draw_full, LV_EVENT_DRAW_MAIN, NULL);
     lv_obj_add_event_cb(s_chart_root, chart_click, LV_EVENT_CLICKED, NULL);
+    s_chart_idle = lv_timer_create(chart_idle_cb, 1000, NULL);
     lv_screen_load(s_chart_root);
 }
 

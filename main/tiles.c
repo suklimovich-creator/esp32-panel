@@ -252,6 +252,23 @@ static void d_text_fit(const lv_font_t *f, uint32_t c, float x, float base, int 
     d_text(f, c, LV_OPA_COVER, x, base, 0, b);
 }
 
+static void d_text_fit_center(const lv_font_t *f, uint32_t c, float cx, float base,
+                              int maxw, const char *t)
+{
+    if (maxw <= 0) return;
+    char b[96];
+    snprintf(b, sizeof(b), "%s", t ? t : "");
+    if (text_w(f, b) > maxw) {
+        size_t n = strlen(b);
+        while (n > 0) {
+            do n--; while (n > 0 && ((unsigned char)b[n] & 0xC0) == 0x80);
+            snprintf(b + n, sizeof(b) - n, "…");
+            if (text_w(f, b) <= maxw) break;
+        }
+    }
+    d_text(f, c, LV_OPA_COVER, cx, base, 1, b);
+}
+
 // ------------------------------------------------------------ части рисунка
 static void d_card(int x, int y, int w, int h, bool on, bool pressed)
 {
@@ -524,28 +541,21 @@ static void draw_unknown(const tile_t *t, int x, int y, int w, int h)
     d_text(T_F12, T_DIM, LV_OPA_COVER, x + TS(12), y + TS(46), 0, "тип не поддерживается");
 }
 
-// Набор сцен: клавиши раскладываются внутри плитки заданного w/h.
-// Сетку подбираем по размеру: перебор числа столбцов, побеждает раскладка
-// с самыми крупными клавишами (с 0.11).
+// Набор сцен: как в wb-svg-panel, до 9 клавиш - сетка 3×3,
+// от 10 до 12 - 4×3. Даже низкая плитка остаётся набором кнопок,
+// а не превращается в одну надпись со счётчиком сцен.
 static bool scene_grid(const tile_t *t, int x, int y, int w, int h,
                        int *cols, int *rows, int *top, int *kw, int *kh)
 {
     if (!t->nkeys) return false;
+    int c = t->nkeys <= 9 ? 3 : 4;
+    int r = (t->nkeys + c - 1) / c;
     int gx = TS(8), gy = TS(6);
-    // заголовок - только когда плитка достаточно высокая
     int ttop = y + (t->title && h >= TS(92) ? TS(26) : TS(8));
-    int best = 0, bc = 1, br = 1, bw = 0, bh = 0;
-    int maxc = t->nkeys < 6 ? t->nkeys : 6;
-    for (int c = 1; c <= maxc; c++) {
-        int r = (t->nkeys + c - 1) / c;
-        int cw = (w - TS(24) - (c - 1) * gx) / c;
-        int ch = (y + h - TS(8) - ttop - (r - 1) * gy) / r;
-        if (cw < TS(36) || ch < TS(20)) continue;
-        int score = cw * ch;
-        if (score > best) { best = score; bc = c; br = r; bw = cw; bh = ch; }
-    }
-    if (!best) return false;
-    *cols = bc; *rows = br; *top = ttop; *kw = bw; *kh = bh;
+    int cw = (w - TS(24) - (c - 1) * gx) / c;
+    int ch = (y + h - TS(8) - ttop - (r - 1) * gy) / r;
+    if (cw <= 0 || ch <= 0) return false;
+    *cols = c; *rows = r; *top = ttop; *kw = cw; *kh = ch;
     return true;
 }
 
@@ -579,13 +589,7 @@ static void draw_scenes(const tile_t *t, int x, int y, int w, int h)
     int cols, rows, top, kw, kh;
     if (t->title && h >= TS(92))
         d_text_fit(T_F12, T_DIM, x + TS(12), y + TS(19), w - TS(24), t->title);
-    if (!scene_grid(t, x, y, w, h, &cols, &rows, &top, &kw, &kh)) {
-        // слишком мало места: хотя бы показать, что клавиши есть
-        char b[24];
-        snprintf(b, sizeof(b), "%d сцен", t->nkeys);
-        d_text(T_F12, T_DIM, LV_OPA_COVER, x + TS(12), y + h - TS(12), 0, b);
-        return;
-    }
+    if (!scene_grid(t, x, y, w, h, &cols, &rows, &top, &kw, &kh)) return;
     for (int i = 0; i < t->nkeys; i++) {
         lv_area_t r;
         if (!scene_key_rect(t, x, y, w, h, i, &r)) continue;
@@ -595,16 +599,21 @@ static void draw_scenes(const tile_t *t, int x, int y, int w, int h)
         d_border(r.x1, r.y1, kw, kh, TS(10), TL(1), act ? T_ACT : 0x3A3B40, LV_OPA_COVER);
         if (t->keys[i].level > 0.01f) {
             int lw = (int)((kw - TS(16)) * (t->keys[i].level > 1 ? 1 : t->keys[i].level));
-            d_rect(r.x1 + TS(8), r.y2 - TS(6), lw, TS(3), TS(2), T_ACT, 140);
+            d_rect(r.x1 + TS(8), r.y2 - TS(3), lw, TS(2), TS(1), T_ACT, 140);
         }
         const char *ic = icon_path(t->keys[i].icon ? t->keys[i].icon : "power");
-        bool with_icon = ic && kh >= TS(38);
-        if (with_icon)
-            d_icon(ic, r.x1 + TS(8) + TS(10), r.y1 + kh / 2.0f, TS(20), 1.8f * s_scale,
+        bool with_icon = ic && kh >= TS(32);
+        float cx = r.x1 + kw / 2.0f;
+        if (with_icon) {
+            // Как в WB: значок над подписью, поэтому даже узкая клавиша
+            // отводит тексту всю свою ширину, а не только хвост справа.
+            d_icon(ic, cx, r.y1 + kh * 0.31f, TS(18), 1.6f * s_scale,
                    T_INK, LV_OPA_COVER);
-        int tx = with_icon ? r.x1 + TS(38) : r.x1 + TS(8);
-        d_text_fit(kh < TS(30) ? T_F12 : T_F13, T_INK, tx, r.y1 + kh / 2.0f + TS(4),
-                   r.x2 - tx - TS(6), t->keys[i].title);
+            d_text_fit_center(T_F12, T_INK, cx, r.y2 - TS(8), kw - TS(4), t->keys[i].title);
+        } else {
+            d_text_fit_center(T_F12, T_INK, cx, r.y1 + kh / 2.0f + TS(4),
+                              kw - TS(4), t->keys[i].title);
+        }
     }
 }
 

@@ -1434,29 +1434,30 @@ static void draw_tv(pad_t *p)
         }
     }
 
-    // медиа и служебные клавиши - два симметричных ряда по центру
-    tv_btn(180, 208, 20, TK_REW, IC_REW, NULL);
-    tv_btn(240, 208, 20, TK_PLAY, IC_PLAY, NULL);
-    tv_btn(300, 208, 20, TK_FWD, IC_FWD, NULL);
-    tv_btn(180, 252, 20, TK_BACK, IC_BACK, NULL);
-    tv_btn(240, 252, 20, TK_SOURCE, IC_SRC, NULL);
-    tv_btn(300, 252, 20, TK_HOME, icon_path("home"), NULL);
+    // Отдельные зоны, как на обычном ТВ-пульте: медиа, затем служебные
+    // клавиши, ниже крестовина слева и громкость справа. Даже второй ряд
+    // приложений заканчивается на y=196 и не пересекается с медиа.
+    tv_btn(180, 226, 20, TK_REW, IC_REW, NULL);
+    tv_btn(240, 226, 20, TK_PLAY, IC_PLAY, NULL);
+    tv_btn(300, 226, 20, TK_FWD, IC_FWD, NULL);
+    tv_btn(180, 272, 20, TK_BACK, IC_BACK, NULL);
+    tv_btn(240, 272, 20, TK_SOURCE, IC_SRC, NULL);
+    tv_btn(300, 272, 20, TK_HOME, icon_path("home"), NULL);
 
-    // крестовина слева и громкость справа: визуальный центр группы - 240
-    const int cx = 176, cy = 386, d = 62;
-    tv_btn(cx, cy - d, 27, TK_UP, IC_CHEV_U, NULL);
-    tv_btn(cx, cy + d, 27, TK_DOWN, IC_CHEV_D, NULL);
-    tv_btn(cx - d, cy, 27, TK_LEFT, IC_CHEV_L, NULL);
-    tv_btn(cx + d, cy, 27, TK_RIGHT, IC_CHEV_R, NULL);
-    d_circle(cx, cy, 35, pressed(Z_KEY, TK_OK) ? 0x4A4B50 : 0x3A3B40, LV_OPA_COVER);
+    const int cx = 168, cy = 384, d = 56;
+    tv_btn(cx, cy - d, 25, TK_UP, IC_CHEV_U, NULL);
+    tv_btn(cx, cy + d, 25, TK_DOWN, IC_CHEV_D, NULL);
+    tv_btn(cx - d, cy, 25, TK_LEFT, IC_CHEV_L, NULL);
+    tv_btn(cx + d, cy, 25, TK_RIGHT, IC_CHEV_R, NULL);
+    d_circle(cx, cy, 34, pressed(Z_KEY, TK_OK) ? 0x4A4B50 : 0x3A3B40, LV_OPA_COVER);
     d_text(F17, K_INK, LV_OPA_COVER, cx, cy + 6, 1, "OK");
-    zone(cx - 38, cy - 38, cx + 38, cy + 38, Z_KEY, TK_OK);
+    zone(cx - 37, cy - 37, cx + 37, cy + 37, Z_KEY, TK_OK);
 
-    const int vx = 368;
-    d_icon(IC_VOL, vx, cy - 98, 20, 2, K_DIM, LV_OPA_COVER);
-    tv_btn(vx, cy - 62, 26, TK_VOL_UP, NULL, "+");
-    tv_btn(vx, cy, 26, TK_MUTE, IC_VOL_X, NULL);
-    tv_btn(vx, cy + 62, 26, TK_VOL_DOWN, NULL, "-");
+    const int vx = 352;
+    d_icon(IC_VOL, vx, 288, 20, 2, K_DIM, LV_OPA_COVER);
+    tv_btn(vx, 322, 25, TK_VOL_UP, NULL, "+");
+    tv_btn(vx, 384, 25, TK_MUTE, IC_VOL_X, NULL);
+    tv_btn(vx, 446, 25, TK_VOL_DOWN, NULL, "-");
     d_head(p, p->power_cmd != NULL, on);
 }
 
@@ -1509,11 +1510,6 @@ static void draw_leak(pad_t *p)
 }
 
 // ---- погода (с 0.11): как у панели - оси, облачность полосой, дождь столбиками
-#define W_X0 54
-#define W_X1 452
-#define W_Y0 206
-#define W_Y1 372
-
 // Значок ряда прогноза: упрощённые коды панели 2 - ясно, 4 - облачно, 5 - дождь.
 static void wmo_weather_icon(int code, float cx, float cy, float r, uint32_t c)
 {
@@ -1521,108 +1517,119 @@ static void wmo_weather_icon(int code, float cx, float cy, float r, uint32_t c)
     d_icon(ic, cx, cy, r * 1.8f, r * 0.32f, c, LV_OPA_COVER);
 }
 
+// Один и тот же прогноз на плитке и в полноэкранном пульте: температура,
+// облачность, вероятность осадков, значки и общая шкала времени.
+static bool forecast_graph(const pad_t *p, float X0, float X1, float Y0, float Y1,
+                           const lv_font_t *font, float scale, bool compact)
+{
+    float tv[W_SERIES];
+    int n = 0;
+    for (int i = 0; i < p->n_t && n < W_SERIES; i++)
+        if (!isnan(p->s_t[i])) tv[n++] = p->s_t[i];
+    if (n < 2 || X1 <= X0 || Y1 <= Y0) return false;
+
+    float lo = 1e9f, hi = -1e9f;
+    for (int i = 0; i < n; i++) {
+        if (tv[i] < lo) lo = tv[i];
+        if (tv[i] > hi) hi = tv[i];
+    }
+    float padv = (hi - lo) * 0.10f;
+    if (padv < 1) padv = 1;
+    float grid_lo = floorf(lo - padv), grid_hi = ceilf(hi + padv);
+    if (grid_hi - grid_lo < 4) grid_hi = grid_lo + 4;
+    char b[48];
+    int divisions = 4;
+    for (int i = 0; i <= divisions; i++) {
+        float v = grid_lo + (grid_hi - grid_lo) * i / divisions;
+        float yy = Y1 - (Y1 - Y0) * i / divisions;
+        d_line(X0, yy, X1, yy, scale, K_INK, i == 0 || i == divisions ? 60 : 30);
+        snprintf(b, sizeof(b), "%.0f°", v);
+        d_text(font, K_DIM, LV_OPA_COVER, X0 - 6 * scale, yy + 4 * scale, 2, b);
+    }
+
+    float xstep = (X1 - X0) / (n - 1);
+    if (p->n_cloud > 0) {
+        int step = n > 12 ? (n - 1) / 12 + 1 : 1;
+        for (int i = 0; i < p->n_cloud && i < n; i += step) {
+            if (isnan(p->s_cloud[i]) || p->s_cloud[i] <= 0) continue;
+            float xx = X0 + xstep * i;
+            float ww = xstep * step;
+            if (xx + ww > X1) ww = X1 - xx;
+            lv_opa_t op = (lv_opa_t)(15 + 70 * clampf(p->s_cloud[i] / 100.0f, 0, 1));
+            d_rect(xx, Y0, ww, Y1 - Y0, 0, K_INK, op);
+        }
+    }
+    for (int i = 0; i < n; i++) {
+        int hh = p->start_hour >= 0 ? (p->start_hour + i) % 24 : i;
+        if (hh % 3 == 0)
+            d_line(X0 + xstep * i, Y0, X0 + xstep * i, Y1, scale, K_INK, 24);
+    }
+    for (int i = 0; i < p->n_prob && i < n; i++) {
+        if (isnan(p->s_prob[i]) || p->s_prob[i] <= 0) continue;
+        float xx = X0 + xstep * i;
+        float bh = (Y1 - Y0) * 0.42f * clampf(p->s_prob[i] / 100.0f, 0, 1);
+        float bw = fmaxf(1.5f * scale, fminf((compact ? 4.0f : 6.0f) * scale, xstep * 0.36f));
+        d_rect(xx - bw / 2, Y1 - bh, bw, bh, 2 * scale, 0x3B8FD4, 130);
+    }
+
+    float prevx = 0, prevy = 0, fmin = 1e9f, fmax = -1e9f;
+    int imin = 0, imax = 0;
+    for (int i = 0; i < n; i++) {
+        if (tv[i] < fmin) { fmin = tv[i]; imin = i; }
+        if (tv[i] > fmax) { fmax = tv[i]; imax = i; }
+    }
+    for (int i = 0; i < n; i++) {
+        float xx = X0 + xstep * i;
+        float yy = Y1 - (Y1 - Y0) * (tv[i] - grid_lo) / (grid_hi - grid_lo);
+        if (i) d_line(prevx, prevy, xx, yy, (compact ? 1.6f : 2.5f) * scale,
+                      0x3B8FD4, LV_OPA_COVER);
+        if (i == imin || i == imax) d_circle(xx, yy, 3.2f * scale, 0x3B8FD4, LV_OPA_COVER);
+        prevx = xx; prevy = yy;
+    }
+    if (imin != imax) {
+        for (int k = 0; k < 2; k++) {
+            int i = k ? imax : imin;
+            float xx = X0 + xstep * i;
+            float yy = Y1 - (Y1 - Y0) * (tv[i] - grid_lo) / (grid_hi - grid_lo);
+            snprintf(b, sizeof(b), "%.0f°", tv[i]);
+            float dy = k || yy > Y1 - 16 * scale ? -6.0f : 12.0f;
+            d_text(font, 0x3B8FD4, LV_OPA_COVER, xx, yy + dy * scale, 1, b);
+        }
+    }
+    if (p->n_code > 0) {
+        int step = n > (compact ? 5 : 8) ? (n - 1) / (compact ? 4 : 7) : 1;
+        for (int i = 0; i < p->n_code && i < n; i += step)
+            wmo_weather_icon(p->s_code[i], X0 + xstep * i, Y0 + (compact ? 42.0f : 20.0f) * scale,
+                             (compact ? 7.0f : 12.0f) * scale, K_DIM);
+    }
+    for (int i = 0; i < n; i++) {
+        int hh = p->start_hour >= 0 ? (p->start_hour + i) % 24 : i;
+        float xx = X0 + xstep * i;
+        if (hh % 6 == 0 && xx < X1 - 22 * scale) {
+            snprintf(b, sizeof(b), "%02d:00", hh);
+            d_text(font, K_DIM, LV_OPA_COVER, xx, Y1 + 17 * scale, 1, b);
+        }
+    }
+    return true;
+}
+
 static void draw_weather(pad_t *p)
 {
     d_rect(0, 0, 480, 480, 0, K_BG2, LV_OPA_COVER);
     int hour = ui_hour_now();
     const char *ic = wmo_icon(p->n_code ? p->s_code[0] : -1, hour >= 6 && hour < 21);
-    if (ic) d_icon(ic, 92, 132, 72, 4.2f, K_INK, LV_OPA_COVER);
+    if (ic) d_icon(ic, 64, 124, 60, 3.6f, K_INK, LV_OPA_COVER);
     char b[80];
     if (p->has_wtemp) snprintf(b, sizeof(b), "%.0f", p->w_temp);
     else snprintf(b, sizeof(b), "--");
-    d_num_deg(F60, F17, K_INK, 258, 160, 16, b, "°");
-    if (p->w_desc[0]) d_text_ellipsize(F17, K_DIM, 270, 178, 1, 300, p->w_desc);
+    d_num_deg(F60, F17, K_INK, 166, 146, -34, b, "°");
+    if (p->w_desc[0]) d_text_ellipsize(F17, K_DIM, 340, 116, 1, 220, p->w_desc);
     if (p->has_wt) {
         snprintf(b, sizeof(b), "мин %.0f°  макс %.0f°", p->w_tmin, p->w_tmax);
-        d_text(F13, K_DIM, LV_OPA_COVER, 92, 198, 1, b);
+        d_text(F13, K_DIM, LV_OPA_COVER, 340, 141, 1, b);
     }
 
-    // ряд температур без пропусков
-    float tv[W_SERIES];
-    int n = 0;
-    for (int i = 0; i < p->n_t && n < W_SERIES; i++)
-        if (!isnan(p->s_t[i])) tv[n++] = p->s_t[i];
-    if (n >= 2) {
-        float lo = 1e9f, hi = -1e9f;
-        for (int i = 0; i < n; i++) {
-            if (tv[i] < lo) lo = tv[i];
-            if (tv[i] > hi) hi = tv[i];
-        }
-        float padv = (hi - lo) * 0.10f;
-        if (padv < 1) padv = 1;
-        lo -= padv; hi += padv;
-        // горизонтальная сетка: округлённые границы, 5 линий
-        float grid_lo = floorf(lo), grid_hi = ceilf(hi);
-        if (grid_hi - grid_lo < 4) grid_hi = grid_lo + 4;
-        for (int i = 0; i <= 4; i++) {
-            float v = grid_lo + (grid_hi - grid_lo) * i / 4;
-            float y = W_Y1 - (W_Y1 - W_Y0) * (v - grid_lo) / (grid_hi - grid_lo);
-            d_line(W_X0, y, W_X1, y, 1, K_INK, i == 0 || i == 4 ? 60 : 30);
-            snprintf(b, sizeof(b), "%.0f°", v);
-            d_text(F13, K_DIM, LV_OPA_COVER, W_X0 - 8, y + 4, 2, b);
-        }
-        float xstep = (float)(W_X1 - W_X0) / (n - 1);
-        // облачность: полупрозрачные сегменты фона графика
-        if (p->n_cloud > 0) {
-            int step = n > 12 ? (n - 1) / 12 + 1 : 1;
-            for (int i = 0; i < p->n_cloud && i < n; i += step) {
-                if (isnan(p->s_cloud[i]) || p->s_cloud[i] <= 0) continue;
-                float x = W_X0 + xstep * i;
-                float w = xstep * step;
-                if (x + w > W_X1) w = W_X1 - x;
-                lv_opa_t op = (lv_opa_t)(15 + 70 * clampf(p->s_cloud[i] / 100.0f, 0, 1));
-                d_rect((int)x, W_Y0, (int)(w + 0.5f), W_Y1 - W_Y0, 0, K_INK, op);
-            }
-        }
-        // вертикальные оси времени
-        for (int i = 0; i < n; i++) {
-            int hh = p->start_hour >= 0 ? (p->start_hour + i) % 24 : i;
-            if (hh % 3 == 0) d_line(W_X0 + xstep * i, W_Y0, W_X0 + xstep * i, W_Y1, 1, K_INK, 24);
-        }
-        // дождь: столбики от нижней оси
-        if (p->n_prob > 0) {
-            for (int i = 0; i < p->n_prob && i < n; i++) {
-                if (isnan(p->s_prob[i]) || p->s_prob[i] <= 0) continue;
-                float x = W_X0 + xstep * i;
-                float bh = (W_Y1 - W_Y0) * 0.42f * clampf(p->s_prob[i] / 100.0f, 0, 1);
-                d_rect((int)(x - 3), (int)(W_Y1 - bh), 6, (int)bh, 2, 0x3B8FD4, 130);
-            }
-        }
-        // линия температуры поверх, экстремумы - точками
-        float prevx = 0, prevy = 0;
-        float fmin = 1e9f, fmax = -1e9f;
-        for (int i = 0; i < n; i++) {
-            if (tv[i] < fmin) fmin = tv[i];
-            if (tv[i] > fmax) fmax = tv[i];
-        }
-        for (int i = 0; i < n; i++) {
-            float x = W_X0 + xstep * i;
-            float y = W_Y1 - (W_Y1 - W_Y0) * (tv[i] - lo) / (hi - lo);
-            if (i) d_line(prevx, prevy, x, y, 2.5f, 0x3B8FD4, LV_OPA_COVER);
-            if (fabsf(tv[i] - fmin) < 0.01f || fabsf(tv[i] - fmax) < 0.01f)
-                d_circle(x, y, 3.4f, 0x3B8FD4, LV_OPA_COVER);
-            prevx = x; prevy = y;
-        }
-        // значки погоды по верху графика
-        if (p->n_code > 0) {
-            int step = n > 8 ? (n - 1) / 7 : 1;
-            for (int i = 0; i < p->n_code && i < n; i += step)
-                wmo_weather_icon(p->s_code[i], W_X0 + xstep * i, W_Y0 + 18, 12, K_DIM);
-        }
-        // подписи времени под осью
-        for (int i = 0; i < n; i++) {
-            int hh = p->start_hour >= 0 ? (p->start_hour + i) % 24 : i;
-            float lx = W_X0 + xstep * i;
-            if (hh % 6 == 0 && lx < W_X1 - 24) {
-                snprintf(b, sizeof(b), "%02d:00", hh);
-                d_text(F13, K_DIM, LV_OPA_COVER, lx, W_Y1 + 18, 1, b);
-            }
-        }
-    } else {
-        d_text(F17, K_DIM, LV_OPA_COVER, 240, 300, 1, "Прогноз пока не получен");
-    }
-
-    // текущие показатели чипами внизу
+    // Текущие показатели - над прогнозом, а не отдельной строкой под ним.
     const char *labels[3] = {"Влажность", "Давление", "Ветер"};
     char vals[3][24];
     if (p->has_whum) snprintf(vals[0], sizeof(vals[0]), "%.0f %%", p->w_hum);
@@ -1632,11 +1639,14 @@ static void draw_weather(pad_t *p)
     if (p->has_wwind) snprintf(vals[2], sizeof(vals[2]), "%.1f м/с", p->w_wind);
     else snprintf(vals[2], sizeof(vals[2]), "—");
     for (int i = 0; i < 3; i++) {
-        int x = 36 + i * 140;
-        d_rect(x, 420, 128, 42, 14, K_CHIP, LV_OPA_COVER);
-        d_text(F13, K_DIM, LV_OPA_COVER, x + 64, 436, 1, labels[i]);
-        d_text(F13, K_INK, LV_OPA_COVER, x + 64, 452, 1, vals[i]);
+        int xx = 36 + i * 140;
+        d_rect(xx, 160, 128, 40, 14, K_CHIP, LV_OPA_COVER);
+        d_text(F13, K_DIM, LV_OPA_COVER, xx + 64, 175, 1, labels[i]);
+        d_text(F13, K_INK, LV_OPA_COVER, xx + 64, 192, 1, vals[i]);
     }
+
+    if (!forecast_graph(p, 54, 452, 216, 384, F13, 1.0f, false))
+        d_text(F17, K_DIM, LV_OPA_COVER, 240, 304, 1, "Прогноз пока не получен");
     d_head(p, false, true);
 }
 
@@ -2491,25 +2501,23 @@ static void tile_leak(const pad_t *p, int x, int y, int w, int h)
     upcase(b, sizeof(b), p->title ? p->title : "");
     uint32_t col = p->alarm_on || wet ? LEAK_RED : LEAK_GREEN;
 
-    // Половинная высота (h:0.5): все датчики строками мелким шрифтом,
-    // заголовок плитки здесь не рисуем - место дороже.
+    // Половинная высота (h:0.5): датчики занимают равные колонки
+    // в одной горизонтальной строке. Цвет точки и подписи показывает состояние.
     if (h < PS(96) && p->nsensors) {
         int n = p->nsensors;
-        int row = (h - PS(6)) / n;
-        if (row > PS(17)) row = PS(17);
+        int cw = w / n;
         lv_area_t clip_old = L->_clip_area, ta = {x + PS(2), y, x + w - PS(3), y + h - 1}, cl;
         bool clipped = lv_area_intersect(&cl, &clip_old, &ta);
         if (clipped) L->_clip_area = cl;
         for (int i = 0; i < n; i++) {
-            int ry = y + PS(3) + i * row;
-            uint32_t c = p->sensors[i].wet ? LEAK_RED : K_INK;
-            d_circle(x + PS(14), ry + row / 2.0f, PS(3),
-                     p->sensors[i].wet ? LEAK_RED : LEAK_GREEN, LV_OPA_COVER);
-            d_text_ellipsize(P_F12, c, x + PS(24), ry + row / 2.0f + PS(4), 0,
-                             w - PS(96), p->sensors[i].title ? p->sensors[i].title : "?");
-            d_text(P_F12, p->sensors[i].wet ? LEAK_RED : K_DIM, LV_OPA_COVER,
-                   x + w - PS(12), ry + row / 2 + PS(4), 2,
-                   p->sensors[i].wet ? "мокро" : "сухо");
+            int cx = x + i * cw;
+            bool wet = p->sensors[i].wet;
+            uint32_t col = wet ? LEAK_RED : LEAK_GREEN;
+            d_circle(cx + PS(11), y + h / 2.0f, PS(3), col, LV_OPA_COVER);
+            d_text_ellipsize(P_F12, wet ? LEAK_RED : K_INK,
+                             cx + PS(20), y + h / 2.0f + PS(4), 0,
+                             cw - PS(24), p->sensors[i].title ? p->sensors[i].title : "?");
+            if (i) d_line(cx, y + PS(10), cx, y + h - PS(10), PL(1), K_INK, 24);
         }
         if (clipped) L->_clip_area = clip_old;
         return;
@@ -2546,59 +2554,42 @@ static void tile_leak(const pad_t *p, int x, int y, int w, int h)
     }
 }
 
-// Погода на плитке: значок, температура, описание, влажность/давление/ветер,
-// мин/макс и спарклайн суточного хода (с 0.11).
+// Погода на плитке повторяет forecast.wb-svg-panel: текущие значение и
+// описание поверх общего графика, название и текущие показатели внизу.
 static void tile_weather(const pad_t *p, int x, int y, int w, int h)
 {
-    char b[80];
-    upcase(b, sizeof(b), p->title ? p->title : "");
-    d_text(P_F12, K_DIM, LV_OPA_COVER, x + PS(12), y + PS(20), 0, b);
+    char b[96];
+    lv_area_t clip_old = L->_clip_area, ta = {x + PS(2), y + PS(2), x + w - PS(3), y + h - PS(3)}, cl;
+    bool clipped = lv_area_intersect(&cl, &clip_old, &ta);
+    if (clipped) L->_clip_area = cl;
+
+    if (h >= PS(90))
+        forecast_graph(p, x + PS(34), x + w - PS(8), y + PS(6), y + h - PS(44),
+                       P_F12, s_tile_scale, true);
+
     int hour = ui_hour_now();
     const char *ic = wmo_icon(p->n_code ? p->s_code[0] : -1, hour >= 6 && hour < 21);
-    if (ic) d_icon(ic, x + w - PS(30), y + PS(32), PS(32), 2.2f * s_tile_scale, K_INK, LV_OPA_COVER);
+    if (ic) d_icon(ic, x + PS(30), y + PS(27), PS(28), 2.0f * s_tile_scale, K_INK, LV_OPA_COVER);
     if (p->has_wtemp) snprintf(b, sizeof(b), "%.0f", p->w_temp);
     else snprintf(b, sizeof(b), "--");
     int wn = text_w(P_F32, b), wd = text_w(P_F17, "°");
-    d_num_deg(P_F32, P_F17, K_INK, x + PS(12) + (wn + wd) / 2.0f, y + PS(62), -PS(14), b, "°");
+    float right = x + w - PS(14);
+    d_num_deg(P_F32, P_F17, K_INK, right - (wn + wd) / 2.0f, y + PS(46), -PS(20), b, "°");
     if (p->w_desc[0])
-        d_text_ellipsize(P_F12, K_DIM, x + PS(12), y + PS(80), 0, w - PS(24), p->w_desc);
-    // текущие показатели строкой: влажность, давление, ветер
-    if (h >= PS(120)) {
-        b[0] = 0;
-        if (p->has_whum) snprintf(b + strlen(b), sizeof(b) - strlen(b), "влажн %.0f%%", p->w_hum);
-        if (p->has_wpress) snprintf(b + strlen(b), sizeof(b) - strlen(b), "%sдавл %.0f", b[0] ? " · " : "", p->w_press);
-        if (p->has_wwind) snprintf(b + strlen(b), sizeof(b) - strlen(b), "%sветер %.1f", b[0] ? " · " : "", p->w_wind);
-        if (b[0]) d_text(P_F12, 0xC8CACF, LV_OPA_COVER, x + PS(12), y + h - PS(28), 0, b);
-    }
-    if (p->has_wt) {
-        snprintf(b, sizeof(b), "мин %.0f°  макс %.0f°", p->w_tmin, p->w_tmax);
-        d_text(P_F12, 0xC8CACF, LV_OPA_COVER, x + PS(12), y + h - PS(10), 0, b);
-    }
-    // спарклайн суточного хода: под описанием, на всю ширину плитки
-    if (h >= PS(120) && p->n_t >= 2) {
-        float lo = 1e9f, hi = -1e9f;
-        for (int i = 0; i < p->n_t; i++) {
-            if (isnan(p->s_t[i])) continue;
-            if (p->s_t[i] < lo) lo = p->s_t[i];
-            if (p->s_t[i] > hi) hi = p->s_t[i];
-        }
-        if (hi - lo < 2) { lo -= 1; hi += 1; }
-        float X0 = x + PS(12), X1 = x + w - PS(14), Y0 = y + PS(92), Y1 = y + h - PS(66);
-        lv_area_t clip_old = L->_clip_area, ta = {x + PS(2), y + PS(2), x + w - PS(3), y + h - PS(3)}, cl;
-        if (lv_area_intersect(&cl, &clip_old, &ta)) {
-            L->_clip_area = cl;
-            float lx = 0, ly = 0;
-            bool have = false;
-            for (int i = 0; i < p->n_t; i++) {
-                if (isnan(p->s_t[i])) { have = false; continue; }
-                float px = X0 + (X1 - X0) * i / (p->n_t - 1);
-                float py = Y1 - (p->s_t[i] - lo) / (hi - lo) * (Y1 - Y0);
-                if (have) d_line(lx, ly, px, py, 1.6f * s_tile_scale, K_ACTIVE, LV_OPA_COVER);
-                lx = px; ly = py; have = true;
-            }
-            L->_clip_area = clip_old;
-        }
-    }
+        d_text_ellipsize(P_F12, K_DIM, right, y + PS(64), 2, w / 2, p->w_desc);
+
+    // Название слева и компактная строка «влажность · давление · ветер» справа.
+    d_text_ellipsize(P_F13, K_INK, x + PS(10), y + h - PS(8), 0, w / 2 - PS(12),
+                     p->title ? p->title : "");
+    b[0] = 0;
+    if (p->has_whum) snprintf(b + strlen(b), sizeof(b) - strlen(b), "%.0f%%", p->w_hum);
+    if (p->has_wpress) snprintf(b + strlen(b), sizeof(b) - strlen(b), "%s%.0f мм",
+                                b[0] ? " · " : "", p->w_press);
+    if (p->has_wwind) snprintf(b + strlen(b), sizeof(b) - strlen(b), "%s%.1f м/с",
+                               b[0] ? " · " : "", p->w_wind);
+    if (b[0]) d_text_ellipsize(P_F12, K_DIM, x + w - PS(10), y + h - PS(8), 2,
+                               w / 2 - PS(6), b);
+    if (clipped) L->_clip_area = clip_old;
 }
 
 // «Сегодня» на плитке: задания строками с переносом, сколько помещается (с 0.11).

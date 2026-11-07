@@ -2,6 +2,7 @@
 // Раскладка содержит описание series и относительный адрес history. Точки
 // приходят отдельным JSON и не меняют раскладку (иначе экран перезапускался бы).
 #include <string.h>
+#include <ctype.h>
 #include <stdlib.h>
 #include <stdio.h>
 #include <math.h>
@@ -78,6 +79,32 @@ static uint32_t cjcolor(const cJSON *o, uint32_t def)
     return *end ? def : (uint32_t)n;
 }
 
+static bool contains_ci(const char *s, const char *needle)
+{
+    if (!s || !needle || !*needle) return false;
+    size_t n = strlen(needle);
+    for (; *s; s++) {
+        size_t i = 0;
+        while (i < n && s[i] && tolower((unsigned char)s[i]) ==
+               tolower((unsigned char)needle[i])) i++;
+        if (i == n) return true;
+    }
+    return false;
+}
+
+// Цвета величин из светлой темы wb-svg-panel (builtin_themes/light.yaml).
+// Свой color серии по-прежнему сильнее этого назначения.
+static uint32_t default_series_color(const cJSON *item, int index, const char *topic)
+{
+    const cJSON *label = cJSON_GetObjectItem(item, "label");
+    const char *name = cJSON_IsString(label) ? label->valuestring : "";
+    if (contains_ci(topic, "co2") || contains_ci(name, "co2")) return 0x4E9A6B;
+    if (contains_ci(topic, "voc") || contains_ci(topic, "air quality") ||
+        contains_ci(name, "voc")) return 0x8E6BC4;
+    const uint32_t colors[CHART_MAX_SERIES] = {0xE08A2D, 0x3B93C4, 0x4E9A6B};
+    return colors[index];
+}
+
 int charts_count(void) { return s_charts_count; }
 chart_t *charts_at(int index) { return index >= 0 && index < s_charts_count ? s_charts[index] : NULL; }
 const char *chart_history_path(const chart_t *c) { return c ? c->history : NULL; }
@@ -93,7 +120,6 @@ chart_t *chart_parse(const cJSON *o, const char *title)
     c->history = cjstr(o, "history");
     c->range = cjint(o, "range", 86400);
     c->points = cjint(o, "points", 90);
-    const uint32_t colors[CHART_MAX_SERIES] = {0xE08A2D, 0x3B93C4, 0x4E9A6B};
     const cJSON *item;
     cJSON_ArrayForEach(item, series) {
         if (c->nseries >= CHART_MAX_SERIES) break;
@@ -105,7 +131,7 @@ chart_t *chart_parse(const cJSON *o, const char *title)
         s->digits = cjint(item, "digits", 1);
         if (s->digits < 0) s->digits = 0;
         if (s->digits > 3) s->digits = 3;
-        s->color = cjcolor(item, colors[c->nseries]);
+        s->color = cjcolor(item, default_series_color(item, c->nseries, s->topic));
         const cJSON *lo = cJSON_GetObjectItem(item, "min");
         const cJSON *hi = cJSON_GetObjectItem(item, "max");
         if (cJSON_IsNumber(lo) && cJSON_IsNumber(hi) && hi->valuedouble > lo->valuedouble) {

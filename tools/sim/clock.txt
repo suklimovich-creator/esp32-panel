@@ -1,0 +1,12 @@
+/devices/weather/controls/temperature=-12.5
+/devices/weather/controls/description=Слабая облачность, лёгкий ветер
+/devices/weather/controls/humidity=89
+/devices/weather/controls/pressure=751
+/devices/weather/controls/windspeed=11
+/devices/weather/controls/temp_min_12h=-15
+/devices/weather/controls/temp_max_12h=-7
+/devices/weather/controls/temp_series=-12.5,-13,-11
+/devices/weather/controls/code_series=2,2,3
+/devices/weather/controls/precip_prob_series=0,0,10
+/devices/weather/controls/cloud_series=40,50,60
+/devices/weather/controls/forecast_start=2026-10-17T12:00:00+03:00

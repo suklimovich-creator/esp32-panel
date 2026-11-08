@@ -185,6 +185,34 @@ int main(int argc, char **argv)
             int n = atoi(argv[9]);
             if (n >= 0 && n < s_count && s_tiles[n].pad) pad_open(s_tiles[n].pad);
         }
+        // [10] clock-check - 6 размеров × 3 режима, погодный pad и минутный tick.
+        if (argc > 10 && !strcmp(argv[10], "clock-check")) {
+            static const int sizes[6][2] = {{4, 1}, {2, 2}, {4, 2}, {4, 4}, {3, 3}, {2, 3}};
+            if (s_count != 18 || s_count2 != 1) {
+                fprintf(stderr, "clock-check: ожидались 18 плиток и 1 заставка\n");
+                return 13;
+            }
+            for (int i = 0; i < s_count; i++) {
+                int mode = i % 3;
+                clock_view_t expected = mode == 1 ? CLOCK_VIEW_CLOCK
+                                      : mode == 2 ? CLOCK_VIEW_WEATHER : CLOCK_VIEW_BOTH;
+                if (s_tiles[i].type != T_CLOCK || !s_tiles[i].pad ||
+                    !s_tiles[i].pad->clock_face || !s_tiles[i].pad->has_wtemp ||
+                    s_tiles[i].pad->clock_view != expected ||
+                    s_tiles[i].w_cells != sizes[i / 3][0] ||
+                    s_tiles[i].h_cells != sizes[i / 3][1]) {
+                    fprintf(stderr, "clock-check: неверный тип/размер/view у плитки %d\n", i);
+                    return 14;
+                }
+            }
+            if (s_tiles2[0].type != T_CLOCK || !s_tiles2[0].pad->clock_face) {
+                fprintf(stderr, "clock-check: часы заставки не разобраны\n");
+                return 15;
+            }
+            tiles_clock_tick();
+            tiles_clock_tick();
+            printf("clock-check: 6 размеров × 3 режима, MQTT, заставка и tick — OK\n");
+        }
         // [10] saver - показать заставку; saver-check - войти и выйти с проверкой.
         if (argc > 10 && !strncmp(argv[10], "saver", 5) && s_saver_scr) {
             int main_page = s_page_idx;

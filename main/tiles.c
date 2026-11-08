@@ -19,6 +19,7 @@
 //   tv      - телевизор (с 0.11): [pad] kind=tv; плитку и пульт рисует pads.c
 //   leak    - протечки (с 0.11): sensors, [alarm], pad kind=leak
 //   weather - погода (с 0.11): каналы и ряды прогноза из MQTT
+//   clock   - часы и/или погода (с 0.11.8), время локально, view задаёт состав
 //   today   - «Сегодня» (с 0.11): дела и события приходят лентой по адресу
 //             data (как точки графиков), кэшируются в tiles.c
 // У диммера с полем pad (kind=light, с 0.10) долгое нажатие открывает пульт
@@ -76,7 +77,7 @@ static const char *TAG = "tiles";
 #define T_TRACK  0x3A3B40
 
 typedef enum { T_SWITCH, T_DIMMER, T_SCENE, T_SENSOR, T_INFO, T_CHART, T_CAMERA,
-               T_SCENES, T_TV, T_LEAK, T_WEATHER, T_TODAY, T_UNKNOWN } ttype_t;
+               T_SCENES, T_TV, T_LEAK, T_WEATHER, T_CLOCK, T_TODAY, T_UNKNOWN } ttype_t;
 
 #define MAX_LINES 3
 #define MAX_KEYS 12             // клавиш в наборе сцен
@@ -126,6 +127,7 @@ static int s_npages, s_page_idx;
 static bool s_swipe;
 static int s_cols = 3, s_col_w = BASE_COL_W, s_row_h = BASE_COL_W, s_gap = BASE_GAP;
 static float s_scale = 1.0f;
+static int s_clock_min = -1;      // последняя минута перерисовки T_CLOCK
 
 // Заставка (с 0.11): отдельный экран со своими страницами плиток.
 static tile_t *s_tiles2;
@@ -666,12 +668,27 @@ static void tile_draw_cb(lv_event_t *e)
     case T_INFO: draw_info(t, x, y, w, h); break;
     case T_CHART: chart_draw_tile(t->chart, x, y, w, h, t->pressed, s_scale); break;
     case T_CAMERA: d_card(x, y, w, h, false, t->pressed); break;
-    case T_TV: case T_LEAK: case T_WEATHER: case T_TODAY: draw_pad_tile(t, x, y, w, h); break;
+    case T_TV: case T_LEAK: case T_WEATHER: case T_CLOCK: case T_TODAY: draw_pad_tile(t, x, y, w, h); break;
     default: draw_unknown(t, x, y, w, h); break;
     }
 }
 
 static void tile_redraw(tile_t *t) { if (t->card) lv_obj_invalidate(t->card); }
+
+// Часы не зависят от MQTT: перерисовываем их только при смене минуты.
+void tiles_clock_tick(void)
+{
+    time_t now = time(NULL);
+    struct tm tmv;
+    localtime_r(&now, &tmv);
+    int mark = tmv.tm_year <= 120 ? -2 : tmv.tm_hour * 60 + tmv.tm_min;
+    if (mark == s_clock_min) return;
+    s_clock_min = mark;
+    for (int i = 0; i < s_count; i++)
+        if (s_tiles[i].type == T_CLOCK) tile_redraw(&s_tiles[i]);
+    for (int i = 0; i < s_count2; i++)
+        if (s_tiles2[i].type == T_CLOCK) tile_redraw(&s_tiles2[i]);
+}
 
 // ------------------------------------------------------------ касания
 static void toggle(tile_t *t)
@@ -722,6 +739,7 @@ static void click(tile_t *t)
     case T_TV:
     case T_LEAK:
     case T_WEATHER:
+    case T_CLOCK:
         if (t->pad) pad_open(t->pad);
         break;
     case T_TODAY:
@@ -909,7 +927,7 @@ static void parse_tile(tile_t *t, const cJSON *o)
             : !strcmp(type, "sensor") ? T_SENSOR : !strcmp(type, "info") ? T_INFO
             : !strcmp(type, "chart") ? T_CHART : !strcmp(type, "camera") ? T_CAMERA
             : !strcmp(type, "tv") ? T_TV : !strcmp(type, "leak") ? T_LEAK
-            : !strcmp(type, "weather") ? T_WEATHER
+            : !strcmp(type, "weather") ? T_WEATHER : !strcmp(type, "clock") ? T_CLOCK
             : !strcmp(type, "today") ? T_TODAY : T_UNKNOWN;
     t->title = jstr(o, "title");
     if (!t->title) t->title = ps_strdup(type);
@@ -997,7 +1015,7 @@ static void parse_tile(tile_t *t, const cJSON *o)
     if (t->type == T_TV || t->type == T_LEAK) {
         t->pad = pad_parse(o, t->title);
         if (!t->pad) t->type = T_UNKNOWN;
-    } else if (t->type == T_WEATHER) {
+    } else if (t->type == T_WEATHER || t->type == T_CLOCK) {
         t->pad = weather_parse(o, t->title);
     } else if (t->type == T_TODAY) {
         t->pad = today_parse(o, t->title);
@@ -1020,7 +1038,7 @@ static void parse_tile(tile_t *t, const cJSON *o)
     if (t->type == T_INFO && (t->value || t->pad || t->nlines)) def = 2;
     if (t->type == T_CHART || t->type == T_CAMERA) def = 2;
     if (t->type == T_SCENES || t->type == T_TV || t->type == T_LEAK ||
-        t->type == T_WEATHER || t->type == T_TODAY) def = 2;
+        t->type == T_WEATHER || t->type == T_CLOCK || t->type == T_TODAY) def = 2;
     // Набору сцен нужны три ряда для крупной сетки 3×3. Остальные типы
     // сохраняют прежний предел два ряда.
     int max_h = t->type == T_SCENES ? 6 : 4;
@@ -1224,6 +1242,7 @@ void tiles_build(void *content_obj, void *tabbar_obj, const char *json)
     s_count = 0;
     s_npages = 0;
     s_today_n = 0;                     // реестр лент собирается заново
+    s_clock_min = -1;
     // content уже принадлежит главному экрану, но во время построения этот
     // экран ещё не активен. lv_screen_active() здесь возвращал бы пустой экран.
     s_home = lv_obj_get_screen(content);
@@ -1405,6 +1424,7 @@ static void tile_on_value(tile_t *t, const char *topic, const char *value, uint3
     case T_TV:
     case T_LEAK:
     case T_WEATHER:
+    case T_CLOCK:
         // этими плитками целиком заведует пульт (pads.c)
         if (t->pad) {
             if (pad_on_value(t->pad, topic, value)) changed = true;

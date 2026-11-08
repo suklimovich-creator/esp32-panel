@@ -67,6 +67,7 @@
 
 typedef struct { const char *v, *t, *word, *icon; uint8_t tone; } opt_t;  // tone: 0, 1 холод, 2 тепло
 typedef enum { PAD_CLIMATE, PAD_COVER, PAD_LIGHT, PAD_TV, PAD_LEAK, PAD_WEATHER, PAD_TODAY } pkind_t;
+typedef enum { CLOCK_VIEW_BOTH, CLOCK_VIEW_CLOCK, CLOCK_VIEW_WEATHER } clock_view_t;
 
 struct pad {
     pkind_t kind;
@@ -104,7 +105,9 @@ struct pad {
     char *alarm_t, *resets[MAX_RESETS];
     int nresets;
     bool alarm_on;
-    // weather: каналы и ряды прогноза (с 0.11)
+    // weather: каналы и ряды прогноза (с 0.11); clock — состав плитки
+    bool clock_face;
+    clock_view_t clock_view;
     char *desc_t, *hum_t, *press_t, *wind_t, *tmin_t, *tmax_t;
     char *ser_temp, *ser_code, *ser_prob, *ser_cloud, *ser_start;
     float w_temp, w_hum, w_press, w_wind, w_tmin, w_tmax;
@@ -213,7 +216,9 @@ static void fonts(void)
 
 static const struct { bool bold; int px; } TILE_FONTS[] = {
     {false, 12}, {true, 13}, {false, 15}, {true, 17}, {false, 17},
-    {false, 21}, {false, 26}, {true, 21}, {true, 32}
+    {false, 21}, {false, 26}, {true, 21}, {true, 32}, {false, 32},
+    {true, 44}, {false, 44}, {true, 56}, {true, 64}, {true, 88},
+    {true, 96}, {true, 112}, {true, 128}
 };
 static lv_font_t *s_tile_fonts[sizeof(TILE_FONTS) / sizeof(TILE_FONTS[0])];
 
@@ -2223,6 +2228,12 @@ pad_t *weather_parse(const cJSON *tile, const char *title)
     pad_t *p = heap_caps_calloc(1, sizeof(*p), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (!p) return NULL;
     p->kind = PAD_WEATHER;
+    const cJSON *type = cJSON_GetObjectItem(tile, "type");
+    p->clock_face = cJSON_IsString(type) && !strcmp(type->valuestring, "clock");
+    const char *view = jsv(tile, "view");
+    p->clock_view = view && !strcmp(view, "clock") ? CLOCK_VIEW_CLOCK
+                  : view && !strcmp(view, "weather") ? CLOCK_VIEW_WEATHER
+                  : CLOCK_VIEW_BOTH;
     p->title = title;
     p->current = js(tile, "temp");
     p->desc_t = js(tile, "desc");
@@ -2362,7 +2373,7 @@ static void upcase(char *d, size_t n, const char *s)
 }
 
 static float s_tile_scale = 1;
-static int PS(int v) { return (int)lroundf(v * s_tile_scale); }
+static int PS(float v) { return (int)lroundf(v * s_tile_scale); }
 static int PL(float v) { int n = (int)lroundf(v * s_tile_scale); return n > 0 ? n : 1; }
 
 #define P_F12 tile_font(false, 12)
@@ -2621,6 +2632,189 @@ static void tile_leak(const pad_t *p, int x, int y, int w, int h)
     }
 }
 
+// Часы и текущая погода собираются из базовых блоков (0.11.8).
+// low 177×75, half 170×85, square 177×170; композиция только размещает
+// и масштабирует их. Название плитки и подписи показателей не выводятся.
+typedef struct {
+    char time[8], date[40], temp[24], extra[96];
+    char metrics[3][24];
+    int nmetrics;
+    const char *icon;
+} clock_data_t;
+
+static const lv_font_t *clock_font(bool bold, int base, float k, const char *text, int width)
+{
+    int want = (int)lroundf(base * k), best = 0;
+    for (size_t i = 0; i < sizeof(TILE_FONTS) / sizeof(TILE_FONTS[0]); i++) {
+        if (TILE_FONTS[i].bold != bold || TILE_FONTS[i].px > want) continue;
+        const lv_font_t *f = tile_font(bold, TILE_FONTS[i].px);
+        if (f && (!text || text_w(f, text) <= width) && TILE_FONTS[i].px > best)
+            best = TILE_FONTS[i].px;
+    }
+    if (!best) {
+        // Если даже минимальный кегль шире строки, текст сократит ellipsize.
+        for (size_t i = 0; i < sizeof(TILE_FONTS) / sizeof(TILE_FONTS[0]); i++)
+            if (TILE_FONTS[i].bold == bold && (!best || TILE_FONTS[i].px < best))
+                best = TILE_FONTS[i].px;
+    }
+    return tile_font(bold, best);
+}
+
+static void clock_data(clock_data_t *d, const pad_t *p)
+{
+    static const char *const WD[] = {"пн", "вт", "ср", "чт", "пт", "сб", "вс"};
+    static const char *const MO[] = {"января", "февраля", "марта", "апреля",
+        "мая", "июня", "июля", "августа", "сентября", "октября", "ноября", "декабря"};
+    memset(d, 0, sizeof(*d));
+    snprintf(d->time, sizeof(d->time), "--:--");
+    snprintf(d->date, sizeof(d->date), "—");
+    snprintf(d->temp, sizeof(d->temp), "--");
+    time_t now = time(NULL);
+    struct tm tmv;
+    localtime_r(&now, &tmv);
+    if (tmv.tm_year > 120) {
+        snprintf(d->time, sizeof(d->time), "%02d:%02d", tmv.tm_hour, tmv.tm_min);
+        int wd = tmv.tm_wday == 0 ? 6 : tmv.tm_wday - 1;
+        if (tmv.tm_mon >= 0 && tmv.tm_mon < 12)
+            snprintf(d->date, sizeof(d->date), "%s, %d %s", WD[wd], tmv.tm_mday, MO[tmv.tm_mon]);
+    }
+    if (p->has_wtemp) snprintf(d->temp, sizeof(d->temp), "%.1f°", p->w_temp);
+    if (p->has_whum) snprintf(d->metrics[d->nmetrics++], 24, "%.0f %%", p->w_hum);
+    if (p->has_wpress) snprintf(d->metrics[d->nmetrics++], 24, "%.0f мм", p->w_press);
+    if (p->has_wwind) snprintf(d->metrics[d->nmetrics++], 24, "%.0f км/ч", p->w_wind);
+    for (int i = 0; i < d->nmetrics; i++)
+        snprintf(d->extra + strlen(d->extra), sizeof(d->extra) - strlen(d->extra),
+                 "%s%s", i ? " · " : "", d->metrics[i]);
+    if (!d->extra[0]) snprintf(d->extra, sizeof(d->extra), "—");
+    d->icon = wmo_icon(p->n_code ? p->s_code[0] : -1,
+                       tmv.tm_year <= 120 || (tmv.tm_hour >= 6 && tmv.tm_hour < 21));
+}
+
+static void clock_low(const clock_data_t *d, int x, int y, int w, int h)
+{
+    float k = fminf(w / (177.0f * s_tile_scale), h / (75.0f * s_tile_scale));
+    float ox = x + (w - PS(177 * k)) / 2.0f, oy = y + (h - PS(75 * k)) / 2.0f;
+    d_text(clock_font(true, 42, k, d->time, PS(136 * k)), K_INK, LV_OPA_COVER,
+           ox + PS(88.5f * k), oy + PS(38 * k), 1, d->time);
+    d_text_ellipsize(clock_font(false, 12, k, NULL, 0), K_DIM,
+                     ox + PS(88.5f * k), oy + PS(55 * k), 1, PS(153 * k), d->date);
+}
+
+static void clock_half(const clock_data_t *d, int x, int y, int w, int h)
+{
+    float k = fminf(w / (170.0f * s_tile_scale), h / (85.0f * s_tile_scale));
+    float ox = x + (w - PS(170 * k)) / 2.0f, oy = y + (h - PS(85 * k)) / 2.0f;
+    d_text(clock_font(true, 56, k, d->time, PS(154 * k)), K_INK, LV_OPA_COVER,
+           ox + PS(85 * k), oy + PS(56 * k), 1, d->time);
+    d_text_ellipsize(clock_font(false, 14, k, NULL, 0), K_DIM,
+                     ox + PS(85 * k), oy + PS(77 * k), 1, PS(154 * k), d->date);
+}
+
+static void clock_square(const clock_data_t *d, int x, int y, int w, int h)
+{
+    float k = fminf(w / (177.0f * s_tile_scale), h / (170.0f * s_tile_scale));
+    float ox = x + (w - PS(177 * k)) / 2.0f, oy = y + (h - PS(170 * k)) / 2.0f;
+    d_text(clock_font(true, 64, k, d->time, PS(154 * k)), K_INK, LV_OPA_COVER,
+           ox + PS(88.5f * k), oy + PS(93 * k), 1, d->time);
+    d_text_ellipsize(clock_font(false, 15, k, NULL, 0), K_DIM,
+                     ox + PS(88.5f * k), oy + PS(120 * k), 1, PS(154 * k), d->date);
+}
+
+static void weather_low(const pad_t *p, const clock_data_t *d, int x, int y, int w, int h)
+{
+    float k = fminf(w / (177.0f * s_tile_scale), h / (75.0f * s_tile_scale));
+    float ox = x + (w - PS(177 * k)) / 2.0f, oy = y + (h - PS(75 * k)) / 2.0f;
+    if (d->icon) d_icon(d->icon, ox + PS(25 * k), oy + PS(18 * k),
+                        PS(24 * k), PL(1.8f * k), K_INK, LV_OPA_COVER);
+    d_text(clock_font(true, 28, k, d->temp, PS(112 * k)), K_INK, LV_OPA_COVER,
+           ox + PS(161 * k), oy + PS(38 * k), 2, d->temp);
+    if (p->w_desc[0])
+        d_text_ellipsize(clock_font(false, 10, k, NULL, 0), K_DIM,
+                         ox + PS(88.5f * k), oy + PS(53 * k), 1, PS(153 * k), p->w_desc);
+    d_text_ellipsize(clock_font(false, 10, k, NULL, 0), K_DIM,
+                     ox + PS(88.5f * k), oy + PS(68 * k), 1, PS(153 * k), d->extra);
+}
+
+static void weather_half(const pad_t *p, const clock_data_t *d, int x, int y, int w, int h)
+{
+    float k = fminf(w / (170.0f * s_tile_scale), h / (85.0f * s_tile_scale));
+    float ox = x + (w - PS(170 * k)) / 2.0f, oy = y + (h - PS(85 * k)) / 2.0f;
+    const lv_font_t *tf = clock_font(true, 28, k, d->temp, PS(94 * k));
+    int iw = d->icon ? PS(24 * k) : 0, gap = d->icon ? PS(12 * k) : 0;
+    float left = ox + (PS(170 * k) - iw - gap - text_w(tf, d->temp)) / 2.0f;
+    if (d->icon) d_icon(d->icon, left + iw / 2.0f, oy + PS(21 * k),
+                        iw, PL(1.8f * k), K_INK, LV_OPA_COVER);
+    d_text(tf, K_INK, LV_OPA_COVER, left + iw + gap, oy + PS(35 * k), 0, d->temp);
+    if (p->w_desc[0])
+        d_text_ellipsize(clock_font(false, 11, k, NULL, 0), K_DIM,
+                         ox + PS(85 * k), oy + PS(51 * k), 1, PS(140 * k), p->w_desc);
+    d_text_ellipsize(clock_font(false, 9, k, NULL, 0), K_DIM,
+                     ox + PS(85 * k), oy + PS(66 * k), 1, PS(140 * k), d->extra);
+}
+
+static void weather_square(const pad_t *p, const clock_data_t *d, int x, int y, int w, int h)
+{
+    float k = fminf(w / (177.0f * s_tile_scale), h / (170.0f * s_tile_scale));
+    float ox = x + (w - PS(177 * k)) / 2.0f, oy = y + (h - PS(170 * k)) / 2.0f;
+    if (d->icon) d_icon(d->icon, ox + PS(31 * k), oy + PS(46 * k),
+                        PS(36 * k), PL(2 * k), K_INK, LV_OPA_COVER);
+    d_text(clock_font(true, 44, k, d->temp, PS(94 * k)), K_INK, LV_OPA_COVER,
+           ox + PS(164 * k), oy + PS(66 * k), 2, d->temp);
+    if (p->w_desc[0])
+        d_text_ellipsize(clock_font(false, 12, k, NULL, 0), K_DIM,
+                         ox + PS(88.5f * k), oy + PS(92 * k), 1, PS(144 * k), p->w_desc);
+    for (int i = 0; i < d->nmetrics; i++)
+        d_text_ellipsize(clock_font(false, 11, k, NULL, 0), K_DIM,
+                         ox + PS(164 * k), oy + PS((110 + i * 17) * k), 2,
+                         PS(150 * k), d->metrics[i]);
+}
+
+static void tile_clock(const pad_t *p, int x, int y, int w, int h)
+{
+    clock_data_t d;
+    clock_data(&d, p);
+    lv_area_t clip_old = L->_clip_area, ta = {x + 1, y + 1, x + w - 2, y + h - 2}, cl;
+    bool clipped = lv_area_intersect(&cl, &clip_old, &ta);
+    if (clipped) L->_clip_area = cl;
+
+    if (p->clock_view == CLOCK_VIEW_CLOCK) {
+        if (h < PS(100)) clock_low(&d, x, y, w, h);
+        else clock_square(&d, x, y, w, h);
+    } else if (p->clock_view == CLOCK_VIEW_WEATHER) {
+        if (h < PS(100)) weather_low(p, &d, x, y, w, h);
+        else weather_square(p, &d, x, y, w, h);
+    } else if (h < PS(100)) {
+        int split = w / 2;
+        clock_low(&d, x, y, split, h);
+        weather_low(p, &d, x + split, y, w - split, h);
+        d_line(x + split, y + PS(6), x + split, y + h - PS(6), PL(1), K_DIM, 50);
+    } else {
+        float ratio = (float)w / h;
+        if (ratio > 1.2f) {
+            int split = w / 2;
+            clock_square(&d, x, y, split, h);
+            weather_square(p, &d, x + split, y, w - split, h);
+            d_line(x + split, y + PS(25), x + split, y + h - PS(25), PL(1), K_DIM, 50);
+        } else if (ratio < 0.6f) {
+            int split = h / 2;
+            clock_square(&d, x, y, w, split);
+            weather_square(p, &d, x, y + split, w, h - split);
+            d_line(x + PS(16), y + split, x + w - PS(16), y + split, PL(1), K_DIM, 50);
+        } else if (ratio < 0.85f) {
+            int split = h * 2 / 3;
+            clock_square(&d, x, y, w, split);
+            weather_half(p, &d, x, y + split, w, h - split);
+            d_line(x + PS(16), y + split, x + w - PS(16), y + split, PL(1), K_DIM, 50);
+        } else {
+            int split = h / 2;
+            clock_half(&d, x, y, w, split);
+            weather_half(p, &d, x, y + split, w, h - split);
+            d_line(x + PS(16), y + split, x + w - PS(16), y + split, PL(1), K_DIM, 50);
+        }
+    }
+    if (clipped) L->_clip_area = clip_old;
+}
+
 // Погода на плитке повторяет forecast.wb-svg-panel: текущие значение и
 // описание поверх общего графика, название и текущие показатели внизу.
 static void tile_weather(const pad_t *p, int x, int y, int w, int h)
@@ -2730,7 +2924,8 @@ bool pad_tile(const pad_t *p, int x, int y, int w, int h, uint32_t page_bg, floa
         return true;
     }
     if (p->kind == PAD_WEATHER) {
-        tile_weather(p, x, y, w, h);
+        if (p->clock_face) tile_clock(p, x, y, w, h);
+        else tile_weather(p, x, y, w, h);
         return true;
     }
     if (p->kind == PAD_TODAY) {

@@ -398,6 +398,7 @@ static void refresh(lv_timer_t *t)
         localtime_r(&now, &tm);
         lv_label_set_text_fmt(lbl_clock, "%02d:%02d", tm.tm_hour, tm.tm_min);
     }
+    tiles_clock_tick();
 
     // Значок связи: красный - нет Wi-Fi, жёлтый - нет брокера, белый - всё в порядке.
     uint32_t c = !ns.sta_connected ? C_BAD : (tiles_count() && !mq_connected()) ? C_ACC : C_TEXT;

@@ -353,9 +353,11 @@ void chart_draw_tile(const chart_t *c, int x, int y, int w, int h, bool pressed,
     }
 
     bool detailed = h >= 160 * scale;
-    int top = chart_px(scale, h >= 100 * scale ? 62 + (c->nseries - 1) * 23 : 30);
+    int top = chart_px(scale, h >= 100 * scale ? 52 + (c->nseries - 1) * 20 : 30);
     int bottom = chart_px(scale, detailed ? 34 : 10);
-    int px = x + pad, py = y + top, pw = w - 2 * pad, ph = h - top - bottom;
+    // Кривая и сетка занимают всю ширину плитки, кроме её однопиксельной рамки.
+    int edge = chart_px(scale, 1);
+    int px = x + edge, py = y + top, pw = w - 2 * edge, ph = h - top - bottom;
     if (ph < chart_px(scale, 18) || pw < chart_px(scale, 20)) return;
     bool any = false;
     for (int i = 0; i < c->nseries; i++) if (c->series[i].count > 1) any = true;

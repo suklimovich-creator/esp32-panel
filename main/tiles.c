@@ -95,6 +95,7 @@ typedef struct {
     char *value, *cmd, *payload, *unit, *icon;
     int digits, max, temp_min, temp_max;
     int w_cells, h_cells;            // ширина и высота в полуединицах сетки
+    int x_cells, y_cells;            // первое свободное место в той же сетке
     bool on, invert, light, active, has_val;
     cJSON *map;                     // подписи значений (info)
     char *active_topic, *note;      // info
@@ -843,11 +844,44 @@ static int tile_span(int cells, int base)
 static int tile_w(const tile_t *t) { return tile_span(t->w_cells, s_col_w); }
 static int tile_h(const tile_t *t) { return tile_span(t->h_cells, s_row_h); }
 
+static bool cells_free(const tile_t *tiles, int first, int last,
+                       int x, int y, int w, int h)
+{
+    for (int i = first; i < last; i++) {
+        const tile_t *o = &tiles[i];
+        if (x < o->x_cells + o->w_cells && x + w > o->x_cells &&
+            y < o->y_cells + o->h_cells && y + h > o->y_cells) return false;
+    }
+    return true;
+}
+
+static void place_tile(tile_t *tiles, int first, int last)
+{
+    tile_t *t = &tiles[last];
+    int max_y = 0;
+    for (int i = first; i < last; i++) {
+        int bottom = tiles[i].y_cells + tiles[i].h_cells;
+        if (bottom > max_y) max_y = bottom;
+    }
+    // Сканирование сверху вниз и слева направо сохраняет порядок JSON,
+    // но позволяет заполнять просветы рядом с высокими плитками.
+    for (int y = 0; y <= max_y; y++) {
+        for (int x = 0; x + t->w_cells <= s_cols * 2; x++) {
+            if (!cells_free(tiles, first, last, x, y, t->w_cells, t->h_cells)) continue;
+            t->x_cells = x;
+            t->y_cells = y;
+            return;
+        }
+    }
+}
+
 static void build_tile(lv_obj_t *page, tile_t *t, int page_idx)
 {
     lv_obj_t *c = lv_obj_create(page);
     lv_obj_remove_style_all(c);
     lv_obj_set_size(c, tile_w(t), tile_h(t));
+    lv_obj_set_pos(c, t->x_cells * (s_col_w + s_gap) / 2,
+                   t->y_cells * (s_row_h + s_gap) / 2);
     lv_obj_remove_flag(c, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_add_flag(c, LV_OBJ_FLAG_CLICKABLE);
     // Диммер ведут пальцем - страницу под ним не листать (как ползунок).
@@ -1017,7 +1051,7 @@ static lv_obj_t *new_page(lv_obj_t *content)
     lv_obj_set_style_bg_opa(page, LV_OPA_TRANSP, 0);
     lv_obj_set_style_border_width(page, 0, 0);
     lv_obj_set_style_radius(page, 0, 0);
-    lv_obj_set_flex_flow(page, LV_FLEX_FLOW_ROW_WRAP);
+    // Позиции плиток задаёт place_tile(), автоматический flex-flow не нужен.
     lv_obj_set_style_pad_hor(page, TS(BASE_PAGE_PAD_X), 0);
     lv_obj_set_style_pad_top(page, TS(BASE_PAGE_PAD_TOP), 0);
     lv_obj_set_style_pad_bottom(page, TS(BASE_PAGE_PAD_BOTTOM), 0);
@@ -1163,9 +1197,11 @@ void tiles_build(void *content_obj, void *tabbar_obj, const char *json)
         s_pages[idx] = new_page(content);
         s_tabs[idx] = new_tab(tabbar, cJSON_IsString(pt) ? pt->valuestring : NULL, idx);
         const cJSON *o;
+        int first = s_count;
         cJSON_ArrayForEach(o, cJSON_GetObjectItem(pg, "tiles")) {
             tile_t *t = &s_tiles[s_count++];
             parse_tile(t, o);
+            place_tile(s_tiles, first, s_count - 1);
             build_tile(s_pages[idx], t, idx);
         }
     }
@@ -1209,9 +1245,11 @@ void tiles_build(void *content_obj, void *tabbar_obj, const char *json)
             lv_obj_remove_flag(s_pages2[idx], LV_OBJ_FLAG_SCROLLABLE);
             if (idx) lv_obj_add_flag(s_pages2[idx], LV_OBJ_FLAG_HIDDEN);
             const cJSON *o;
+            int first = s_count2;
             cJSON_ArrayForEach(o, cJSON_GetObjectItem(pg, "tiles")) {
                 tile_t *t = &s_tiles2[s_count2++];
                 parse_tile(t, o);
+                place_tile(s_tiles2, first, s_count2 - 1);
                 // индексы страниц заставки не пересекаются с основными:
                 // камеры на них не гоняют кадры зря
                 build_tile(s_pages2[idx], t, 100 + idx);

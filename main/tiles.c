@@ -123,6 +123,7 @@ static tile_t *s_tiles;
 static int s_count;
 static lv_obj_t *s_pages[MAX_PAGES], *s_tabs[MAX_PAGES];
 static int s_npages, s_page_idx;
+static bool s_swipe;
 static int s_cols = 3, s_col_w = BASE_COL_W, s_row_h = BASE_COL_W, s_gap = BASE_GAP;
 static float s_scale = 1.0f;
 
@@ -802,6 +803,9 @@ static void tile_touch_cb(lv_event_t *e)
         tile_redraw(t);
         break;
     case LV_EVENT_PRESSING:
+        // Даже короткий сдвиг при включённом свайпе — не нажатие на кнопку.
+        if (s_swipe && in && (abs(p.x - t->p0.x) >= DRAG_SLOP ||
+                              abs(p.y - t->p0.y) >= DRAG_SLOP)) t->dragged = true;
         if (t->type == T_DIMMER && in) drag(t, p, false);
         break;
     case LV_EVENT_LONG_PRESSED:
@@ -1023,7 +1027,7 @@ static void parse_tile(tile_t *t, const cJSON *o)
     t->h_cells = clampi(jcells(o, "h", def), 1, max_h);
 }
 
-// Вкладки: страница видна одна, переключение - нажатием на вкладку.
+// Вкладки: страница видна одна, переключение — нажатием или разрешённым свайпом.
 static void show_page(int idx)
 {
     if (idx < 0 || idx >= s_npages) return;
@@ -1037,6 +1041,34 @@ static void show_page(int idx)
     }
     lv_obj_scroll_to_view(s_tabs[idx], LV_ANIM_ON);
     camera_page_visible(idx);
+}
+
+static tile_t *active_tile(void)
+{
+    lv_obj_t *obj = lv_indev_get_active_obj();
+    while (obj) {
+        for (int i = 0; i < s_count; i++)
+            if (s_tiles[i].card == obj) return &s_tiles[i];
+        obj = lv_obj_get_parent(obj);
+    }
+    return NULL;
+}
+
+static void page_swipe_cb(lv_event_t *e)
+{
+    (void)e;
+    if (!s_swipe || s_npages < 2) return;
+    lv_indev_t *in = lv_indev_active();
+    if (!in) return;
+    lv_dir_t dir = lv_indev_get_gesture_dir(in);
+    if (dir != LV_DIR_LEFT && dir != LV_DIR_RIGHT) return;
+    tile_t *t = active_tile();
+    // Горизонтальный жест ленты регулирует теплоту, а не листает вкладки.
+    if (t && t->type == T_DIMMER) return;
+    int next = s_page_idx + (dir == LV_DIR_LEFT ? 1 : -1);
+    if (next >= 0 && next < s_npages) show_page(next);
+    // До отпускания не отправлять CLICKED плитке, на которой начался свайп.
+    lv_indev_wait_release(in);
 }
 
 static void tab_cb(lv_event_t *e)
@@ -1167,6 +1199,12 @@ void tiles_build(void *content_obj, void *tabbar_obj, const char *json)
 
     // Размеры content ещё могут не пройти компоновку LVGL после создания.
     lv_obj_update_layout(content);
+    s_swipe = cJSON_IsTrue(cJSON_GetObjectItem(root, "swipe"));
+    if (s_swipe) {
+        // Все потомки отдают жест контенту; сам контент дальше его не пускает.
+        lv_obj_remove_flag(content, LV_OBJ_FLAG_GESTURE_BUBBLE);
+        lv_obj_add_event_cb(content, page_swipe_cb, LV_EVENT_GESTURE, NULL);
+    }
     s_cols = clampi(jint(root, "cols", 3), 1, MAX_COLS);
     s_scale = 3.0f / s_cols;
     s_gap = TS(BASE_GAP);

@@ -11,7 +11,12 @@ static void localtime_r(const time_t *stamp, struct tm *out)
 #include "lvgl.h"
 lv_font_t *f14, *f18, *f22, *f28b, *f80l;
 #include "ui_priv.h"
-void mq_publish(const char *t, const char *p) { printf("MQTT %s = %s\n", t, p); }
+static int sim_commands;
+void mq_publish(const char *t, const char *p)
+{
+    sim_commands++;
+    printf("MQTT %s = %s\n", t, p);
+}
 #include "../../main/pads.c"
 #include "../../main/charts.c"
 bool ui_lock(int ms) { return true; }
@@ -97,6 +102,34 @@ static void flush(lv_display_t *d, const lv_area_t *a, uint8_t *px)
 static uint32_t tick(void) { struct timespec t; clock_gettime(CLOCK_MONOTONIC, &t); return t.tv_sec * 1000 + t.tv_nsec / 1000000; }
 static char *readf(const char *n) { FILE *f = fopen(n, "rb"); fseek(f, 0, 2); long l = ftell(f); rewind(f); char *b = malloc(l + 1); fread(b, 1, l, f); b[l] = 0; fclose(f); return b; }
 
+static int sim_touch_x, sim_touch_y;
+static bool sim_touch_down;
+static void sim_touch_read(lv_indev_t *indev, lv_indev_data_t *data)
+{
+    (void)indev;
+    data->point.x = sim_touch_x;
+    data->point.y = sim_touch_y;
+    data->state = sim_touch_down ? LV_INDEV_STATE_PRESSED : LV_INDEV_STATE_RELEASED;
+    data->continue_reading = false;
+}
+
+static void sim_touch_step(lv_indev_t *indev, int x, int y, bool down)
+{
+    sim_touch_x = x;
+    sim_touch_y = y;
+    sim_touch_down = down;
+    lv_tick_inc(16);
+    lv_indev_read(indev);
+}
+
+static void sim_touch_drag(lv_indev_t *indev, int x0, int y0, int x1, int y1)
+{
+    sim_touch_step(indev, x0, y0, true);
+    for (int i = 1; i <= 4; i++)
+        sim_touch_step(indev, x0 + (x1 - x0) * i / 4, y0 + (y1 - y0) * i / 4, true);
+    sim_touch_step(indev, x1, y1, false);
+}
+
 int main(int argc, char **argv)
 {
     // sim tile.json values.txt out.ppm [sheet]
@@ -180,6 +213,62 @@ int main(int argc, char **argv)
                     return 4;
                 }
                 printf("saver-check: камеры 100/101 и возврат на страницу %d — OK\n", main_page);
+            }
+        }
+        // [10] swipe-check / swipe-off-check — настоящий ввод указателя LVGL.
+        if (argc > 10 && !strncmp(argv[10], "swipe", 5)) {
+            bool off = !strcmp(argv[10], "swipe-off-check");
+            if (off) s_swipe = false;
+            if (s_npages != 2 || (!off && !s_swipe)) {
+                fprintf(stderr, "swipe-check: нужны две страницы и swipe: true\n");
+                return 5;
+            }
+            lv_indev_t *indev = lv_indev_create();
+            lv_indev_set_type(indev, LV_INDEV_TYPE_POINTER);
+            lv_indev_set_read_cb(indev, sim_touch_read);
+            int commands = sim_commands;
+            sim_touch_drag(indev, 120, 90, 40, 90);   // влево по выключателю
+            if (off) {
+                if (s_page_idx != 0) {
+                    fprintf(stderr, "swipe-off-check: вкладка переключилась без параметра\n");
+                    return 6;
+                }
+                printf("swipe-off-check: вкладка не изменилась — OK\n");
+            } else {
+                if (s_page_idx != 1 || sim_commands != commands) {
+                    fprintf(stderr, "swipe-check: влево page=%d commands=%d/%d\n",
+                            s_page_idx, sim_commands, commands);
+                    return 7;
+                }
+                sim_touch_drag(indev, 40, 90, 120, 90);  // вправо — обратно
+                if (s_page_idx != 0 || sim_commands != commands) {
+                    fprintf(stderr, "swipe-check: вправо page=%d commands=%d/%d\n",
+                            s_page_idx, sim_commands, commands);
+                    return 8;
+                }
+                sim_touch_drag(indev, 400, 140, 400, 240); // вертикаль — не вкладка
+                if (s_page_idx != 0) {
+                    fprintf(stderr, "swipe-check: вертикальный жест переключил вкладку\n");
+                    return 9;
+                }
+                sim_touch_drag(indev, 280, 140, 200, 140); // теплота ленты
+                if (s_page_idx != 0) {
+                    fprintf(stderr, "swipe-check: диммер переключил вкладку\n");
+                    return 10;
+                }
+                commands = sim_commands;
+                sim_touch_drag(indev, 120, 90, 100, 90);   // короткий сдвиг — не клик
+                if (sim_commands != commands) {
+                    fprintf(stderr, "swipe-check: короткий сдвиг нажал плитку\n");
+                    return 11;
+                }
+                sim_touch_step(indev, 100, 90, true);       // обычное нажатие работает
+                sim_touch_step(indev, 100, 90, false);
+                if (sim_commands != commands + 1) {
+                    fprintf(stderr, "swipe-check: обычное нажатие потеряно\n");
+                    return 12;
+                }
+                printf("swipe-check: направления, диммер и подавление клика — OK\n");
             }
         }
         lv_refr_now(d);

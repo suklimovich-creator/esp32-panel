@@ -3,6 +3,7 @@
 #   sh tools/sim/build.sh <путь к lvgl 9.2.2> <путь к cJSON>
 #   tools/sim/sim tools/sim/ac.json tools/sim/ac.txt ac.ppm [шторка: 7 режим, 8 вентилятор, 9/10 жалюзи]
 #   tools/sim/sim --screen раскладка.json значения.txt out.ppm [вкладка] [history.json] [1 - полный экран]
+#   tools/sim/sim --screen tools/sim/swipe.json tools/sim/swipe.txt out.ppm 0 - - - - swipe-check
 # ac.json - плитка из /api/screen/<имя>, ac.txt - значения «топик=значение».
 set -e
 LV=${1:?путь к lvgl}; CJ=${2:?путь к cJSON}

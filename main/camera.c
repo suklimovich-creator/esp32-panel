@@ -16,7 +16,6 @@
 
 #define CAMERA_SNAPSHOT_MS 1500
 #define CAMERA_HTTP_TIMEOUT_MS 1200
-#define CAMERA_TASK_STOP_MS 4000
 #define CAMERA_RETRY_MAX_MS 10000
 #define CAMERA_RGB_MAX (480 * 480 * 2)
 #define CAMERA_IO_BUF 2048
@@ -37,6 +36,7 @@ struct camera {
     int page;
     uint32_t next_attempt;
     camera_view_t view;
+    bool release_view;              // освободить кадры после выхода задачи
     camera_t *next;
 };
 
@@ -55,8 +55,11 @@ static uint8_t *s_jpeg;
 static StaticSemaphore_t s_mutex_mem;
 static SemaphoreHandle_t s_mutex;
 static camera_t *s_retired;
+static bool s_full_free_pending;
 
 static void free_camera_list(camera_t *c);
+static void free_view(camera_view_t *v);
+static void wake_task(void);
 
 static void state_lock(void)
 {
@@ -307,6 +310,21 @@ static void task_wait(uint32_t ms)
     ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(ms));
 }
 
+// Старые кадры нельзя освобождать, пока HTTP-задача могла их использовать.
+// Скрытые объекты LVGL помечаются сразу, а память освобождается только здесь.
+static void release_pending_views(void)
+{
+    for (camera_t *c = s_cameras; c; c = c->next) {
+        if (!c->release_view) continue;
+        free_view(&c->view);
+        c->release_view = false;
+    }
+    if (s_full_free_pending) {
+        free_view(&s_full_view);
+        s_full_free_pending = false;
+    }
+}
+
 static void camera_task(void *arg)
 {
     (void)arg;
@@ -374,18 +392,23 @@ static void camera_task(void *arg)
     free_camera_list(s_retired);
     s_retired = NULL;
     state_lock();
+    release_pending_views();
     s_task = NULL;
     s_exiting = false;
     state_unlock();
+    // Если за время остановки открыли другую камеру или вкладку, продолжим
+    // работу новой задачей: общий JPEG-буфер уже освобождён старой.
+    wake_task();
     vTaskDelete(NULL);
 }
 
 static void wake_task(void)
 {
-    for (int i = 0; i < 100 && s_exiting; i++) vTaskDelay(pdMS_TO_TICKS(10));
     state_lock();
     bool need = work_locked();
     TaskHandle_t task = s_task;
+    // Задача могла выйти до того, как UI пометил старые кадры на очистку.
+    if (!task) release_pending_views();
     if (need && !task) s_stop = false;
     state_unlock();
     if (need && task) {
@@ -401,6 +424,8 @@ static void wake_task(void)
     }
 }
 
+// Только просим задачу завершиться. UI не ждёт HTTP-read/close: возврат на
+// вкладку и выход из заставки должны быть мгновенными даже при оборванном потоке.
 static bool stop_task(void)
 {
     state_lock();
@@ -408,19 +433,7 @@ static bool stop_task(void)
     TaskHandle_t task = s_task;
     state_unlock();
     if (task) xTaskNotifyGive(task);
-    for (int elapsed = 0; task && elapsed < CAMERA_TASK_STOP_MS; elapsed += 20) {
-        state_lock();
-        task = s_task;
-        state_unlock();
-        if (!task) break;
-        vTaskDelay(pdMS_TO_TICKS(20));
-    }
-    if (task) {
-        ESP_LOGW(TAG, "задача не остановилась вовремя");
-        return false;
-    }
-    s_stop = false;
-    return true;
+    return task == NULL;
 }
 
 static void free_view(camera_view_t *v)
@@ -576,6 +589,7 @@ void camera_close(void)
     s_full_prev = NULL;
     s_full_camera = NULL;
     if (stopped) free_view(&s_full_view);
+    else s_full_free_pending = true;
     wake_task();
 }
 
@@ -584,10 +598,19 @@ void camera_page_visible(int page)
     state_lock();
     s_page = page;
     state_unlock();
-    stop_task();
+    bool stopped = stop_task();
     for (camera_t *c = s_cameras; c; c = c->next) {
-        if (c->page == page) continue;
-        free_view(&c->view);
+        if (c->page == page) {
+            // Успели вернуться до выхода старой задачи: кадры ещё нужны.
+            c->release_view = false;
+            continue;
+        }
+        if (stopped) {
+            free_view(&c->view);
+            c->release_view = false;
+        } else {
+            c->release_view = true;
+        }
         if (c->view.image) lv_obj_add_flag(c->view.image, LV_OBJ_FLAG_HIDDEN);
         if (c->view.status) {
             lv_label_set_text(c->view.status, "Загрузка…");
@@ -625,11 +648,13 @@ void camera_reset(void)
     s_full_camera = NULL;
     if (stopped) {
         free_view(&s_full_view);
+        s_full_free_pending = false;
         free_camera_list(s_retired);
         s_retired = NULL;
         free_camera_list(s_cameras);
         s_cameras = NULL;
     } else {
+        s_full_free_pending = true;
         // Отложенные списки освобождаются после фактического выхода задачи.
         if (!s_retired) {
             s_retired = s_cameras;

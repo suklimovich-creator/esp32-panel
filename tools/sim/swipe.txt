@@ -1,0 +1,5 @@
+sw/state=0
+led/state=1
+led/level=50
+led/temp=50
+room/temp=22.4

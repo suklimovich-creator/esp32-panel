@@ -1,0 +1,19 @@
+{
+  "cols": 3,
+  "swipe": true,
+  "pages": [
+    {
+      "title": "Первая",
+      "tiles": [
+        {"type": "switch", "title": "Свет", "state": "sw/state", "w": 1, "h": 0.5},
+        {"type": "dimmer", "title": "Лента", "state": "led/state", "level": "led/level", "temp": "led/temp", "w": 1, "h": 1}
+      ]
+    },
+    {
+      "title": "Вторая",
+      "tiles": [
+        {"type": "sensor", "title": "Температура", "value": "room/temp", "unit": "°C", "w": 1, "h": 0.5}
+      ]
+    }
+  ]
+}

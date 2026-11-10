@@ -1,4 +1,4 @@
-// Обновление прошивки: с сервера (version.json + .bin) и файлом с веб-страницы.
+// Обновление прошивки: с сервера (firmware.json + версионный .bin) и файлом с веб-страницы.
 //
 // Защита от неудачного обновления: новая версия стартует "на испытании".
 // Она подтверждает себя, только когда экран рисует кадры и (если Wi-Fi
@@ -6,6 +6,7 @@
 // загрузчик возвращает прошлую версию.
 #include <string.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "esp_ota_ops.h"
@@ -15,14 +16,17 @@
 #include "esp_app_format.h"
 #include "esp_system.h"
 #include "esp_log.h"
-#include "cJSON.h"
+#include "esp_heap_caps.h"
 #include "app.h"
+#include "ota_manifest.h"
 
 static const char *TAG = "ota";
 
 #define CHECK_PERIOD_MS (60 * 60 * 1000)   // проверка сервера раз в час
 #define FIRST_CHECK_MS (60 * 1000)         // первая - через минуту после старта
 #define VERIFY_TIMEOUT_S 120
+#define MANIFEST_INITIAL_CAP 4096
+#define MANIFEST_MAX_CAP (256 * 1024)
 
 static TaskHandle_t s_task;
 static char s_state[96] = "ещё не проверялось";
@@ -41,18 +45,6 @@ static void set_state(const char *fmt, const char *arg)
 {
     snprintf(s_state, sizeof(s_state), fmt, arg ? arg : "");
     ESP_LOGI(TAG, "%s", s_state);
-}
-
-// "0.1.10" > "0.1.9": сравниваем по числам, ведущую "v" пропускаем.
-static int ver_cmp(const char *a, const char *b)
-{
-    int x[3] = {0}, y[3] = {0};
-    sscanf(a + (*a == 'v'), "%d.%d.%d", &x[0], &x[1], &x[2]);
-    sscanf(b + (*b == 'v'), "%d.%d.%d", &y[0], &y[1], &y[2]);
-    for (int i = 0; i < 3; i++) {
-        if (x[i] != y[i]) return x[i] < y[i] ? -1 : 1;
-    }
-    return 0;
 }
 
 // ------------------------------------------------------------ rollback guard
@@ -81,21 +73,57 @@ static void verify_running_image(void)
 }
 
 // ------------------------------------------------------------ server check
-static esp_err_t http_get_small(const char *url, char *buf, size_t size)
+static char *http_get_text(const char *url)
 {
     esp_http_client_config_t cfg = {.url = url, .timeout_ms = 8000};
     esp_http_client_handle_t c = esp_http_client_init(&cfg);
+    if (!c) return NULL;
+    char *body = NULL;
+    size_t len = 0, cap = 0;
     esp_err_t err = esp_http_client_open(c, 0);
     if (err == ESP_OK) {
-        esp_http_client_fetch_headers(c);
-        int status = esp_http_client_get_status_code(c);
-        int n = esp_http_client_read_response(c, buf, size - 1);
-        buf[n > 0 ? n : 0] = 0;
-        if (status != 200 || n <= 0) err = ESP_FAIL;
+        int64_t content_len = esp_http_client_fetch_headers(c);
+        if (esp_http_client_get_status_code(c) != 200 ||
+            content_len > MANIFEST_MAX_CAP) {
+            err = ESP_FAIL;
+        } else {
+            cap = content_len > 0 ? (size_t)content_len + 1 : MANIFEST_INITIAL_CAP;
+            body = heap_caps_malloc(cap, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+            if (!body) err = ESP_ERR_NO_MEM;
+        }
+    }
+    while (err == ESP_OK) {
+        if (len + 1 >= cap) {
+            if (cap >= MANIFEST_MAX_CAP) {
+                err = ESP_ERR_INVALID_SIZE;
+                break;
+            }
+            size_t new_cap = cap * 2 > MANIFEST_MAX_CAP ? MANIFEST_MAX_CAP : cap * 2;
+            char *next = heap_caps_realloc(body, new_cap,
+                                           MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+            if (!next) {
+                err = ESP_ERR_NO_MEM;
+                break;
+            }
+            body = next;
+            cap = new_cap;
+        }
+        int n = esp_http_client_read_response(c, body + len, cap - len - 1);
+        if (n < 0) {
+            err = ESP_FAIL;
+            break;
+        }
+        if (n == 0) break;
+        len += (size_t)n;
     }
     esp_http_client_close(c);
     esp_http_client_cleanup(c);
-    return err;
+    if (err != ESP_OK || len == 0) {
+        free(body);
+        return NULL;
+    }
+    body[len] = 0;
+    return body;
 }
 
 static void check_server(void)
@@ -106,40 +134,44 @@ static void check_server(void)
         set_state("нет сети - проверка отложена", NULL);
         return;
     }
-    char url[200], body[512];
-    snprintf(url, sizeof(url), "%sversion.json", g_cfg.fw_url);
-    if (http_get_small(url, body, sizeof(body)) != ESP_OK) {
+    char url[200];
+    if (snprintf(url, sizeof(url), "%sfirmware.json", g_cfg.fw_url) >= (int)sizeof(url)) {
+        set_state("слишком длинный адрес firmware.json", NULL);
+        return;
+    }
+    char *body = http_get_text(url);
+    if (!body) {
         snprintf(s_state, sizeof(s_state), "сервер не ответил: %.60s", url);
         return;
     }
-    cJSON *j = cJSON_Parse(body);
-    const cJSON *jv = cJSON_GetObjectItem(j, "version");
-    const cJSON *jf = cJSON_GetObjectItem(j, "file");
-    if (!cJSON_IsString(jv)) {
-        cJSON_Delete(j);
-        set_state("в version.json нет версии", NULL);
+    ota_release_t release;
+    bool parsed = ota_manifest_parse(body, &release);
+    free(body);
+    if (!parsed) {
+        set_state("в firmware.json нет корректного latest", NULL);
         return;
     }
-    char ver[24], bin[200];
-    snprintf(ver, sizeof(ver), "%s", jv->valuestring);
-    const char *file = cJSON_IsString(jf) ? jf->valuestring : APP_PROJECT_NAME ".bin";
-    if (strncmp(file, "http", 4) == 0) {
-        snprintf(bin, sizeof(bin), "%s", file);
-    } else {
-        snprintf(bin, sizeof(bin), "%s%s", g_cfg.fw_url, file);
-    }
-    cJSON_Delete(j);
 
     const char *cur = esp_app_get_description()->version;
-    if (ver_cmp(ver, cur) <= 0) {
+    int cmp = ota_version_compare(release.version, cur);
+    if (cmp == OTA_VERSION_INVALID) {
+        set_state("неверный формат версии прошивки", NULL);
+        return;
+    }
+    if (cmp <= 0) {
         snprintf(s_state, sizeof(s_state), "последняя версия (%s)", cur);
         return;
     }
 
-    ESP_LOGI(TAG, "на сервере %s, у нас %s - обновляемся", ver, cur);
+    char bin[200];
+    if (snprintf(bin, sizeof(bin), "%s%s", g_cfg.fw_url, release.file) >= (int)sizeof(bin)) {
+        set_state("слишком длинный адрес прошивки", NULL);
+        return;
+    }
+    ESP_LOGI(TAG, "на сервере %s, у нас %s - обновляемся", release.version, cur);
     s_busy = true;
     char msg[64];
-    snprintf(msg, sizeof(msg), "Обновление до %s", ver);
+    snprintf(msg, sizeof(msg), "Обновление до %s", release.version);
     ui_ota_progress(0, msg);
 
     esp_http_client_config_t hc = {.url = bin, .timeout_ms = 15000, .keep_alive_enable = true};
@@ -148,8 +180,12 @@ static void check_server(void)
     esp_err_t err = esp_https_ota_begin(&oc, &h);
     if (err == ESP_OK) {
         esp_app_desc_t d;
-        if (esp_https_ota_get_img_desc(h, &d) != ESP_OK || strcmp(d.project_name, APP_PROJECT_NAME) != 0) {
-            err = ESP_ERR_INVALID_VERSION;   // файл не от этой прошивки
+        if (esp_https_ota_get_img_desc(h, &d) != ESP_OK ||
+            strcmp(d.project_name, APP_PROJECT_NAME) != 0 ||
+            strcmp(d.version, release.version) != 0) {
+            // Нельзя ставить чужой образ или образ не той версии, которую
+            // выбрали в манифесте: иначе latest и фактическая прошивка разойдутся.
+            err = ESP_ERR_INVALID_VERSION;
         }
     }
     int last = -1;
@@ -172,7 +208,7 @@ static void check_server(void)
     if (h) esp_https_ota_abort(h);
 
     if (err == ESP_OK) {
-        set_state("установлена %s, перезагрузка", ver);
+        set_state("установлена %s, перезагрузка", release.version);
         ui_ota_progress(100, "Перезагрузка…");
         vTaskDelay(pdMS_TO_TICKS(800));
         esp_restart();

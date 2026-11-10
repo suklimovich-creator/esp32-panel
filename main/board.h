@@ -5,8 +5,8 @@
 #define LCD_H_RES 480
 #define LCD_V_RES 480
 
-// Тайминги RGB. 12 МГц - как в рабочем ESPHome: ~45 кадров в секунду.
-#define LCD_PCLK_HZ (12 * 1000 * 1000)
+// 16 МГц с bounce-буферами: ~61 кадр/с по таймингам ниже (12 МГц давали ~46).
+#define LCD_PCLK_HZ (16 * 1000 * 1000)
 #define LCD_HSYNC_PULSE 8
 #define LCD_HSYNC_BACK 20
 #define LCD_HSYNC_FRONT 10

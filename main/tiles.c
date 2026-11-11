@@ -116,7 +116,7 @@ typedef struct {
     // касание
     bool pressed, dragging, dragged, flash;
     lv_point_t p0;
-    int v0, axis;                   // axis: 1 - яркость, 2 - теплота
+    int v0, w0, axis;                // v0/w0: яркость и теплота в начале жеста
     uint32_t level_pub, temp_pub, level_touch, temp_touch;
 } tile_t;
 
@@ -765,8 +765,9 @@ static void click(tile_t *t)
     }
 }
 
-// Перетаскивание по диммеру: вверх (широкий - вправо) ярче, у ленты вбок -
-// теплота. Значение - от того, что было в начале касания.
+// Перетаскивание по диммеру: вверх (широкий - вправо) ярче, вбок - теплота.
+// У квадратной ленты обе оси действуют одновременно одним жестом.
+// Значения - от тех, что были в начале касания.
 static void drag(tile_t *t, lv_point_t p, bool final)
 {
     int dx = p.x - t->p0.x, dy = p.y - t->p0.y;
@@ -775,12 +776,12 @@ static void drag(tile_t *t, lv_point_t p, bool final)
     if (!t->dragging) {
         if (abs(dx) < DRAG_SLOP && abs(dy) < DRAG_SLOP) return;
         t->dragging = t->dragged = true;
-        bool side = abs(dx) > abs(dy);
-        t->axis = strip ? 1 : (side && t->temp) ? 2 : 1;
-        t->v0 = t->axis == 2 ? t->tmp : t->lvl;
+        t->axis = strip || !t->temp ? 1 : 0;    // 0 - обе оси сразу
+        t->v0 = t->lvl;
+        t->w0 = t->tmp;
     }
     uint32_t now = lv_tick_get();
-    if (t->axis == 1) {
+    if (t->axis == 1 || t->axis == 0) {
         float d = strip ? dx / (float)(w * 0.8f) : -dy / (float)(h * 0.8f);
         t->lvl = clampi(t->v0 + (int)lroundf(d * t->max), 0, t->max);
         t->level_touch = now;
@@ -792,10 +793,11 @@ static void drag(tile_t *t, lv_point_t p, bool final)
             publish_int(t->level_cmd, t->lvl);
             t->level_pub = now;
         }
-    } else {
+    }
+    if (t->axis == 0) {
         // точки теплоты: слева холодный (больше), справа тёплый
         int span = t->temp_max - t->temp_min;
-        t->tmp = clampi(t->v0 - (int)lroundf(dx / (float)(w * 0.8f) * span), t->temp_min, t->temp_max);
+        t->tmp = clampi(t->w0 - (int)lroundf(dx / (float)(w * 0.8f) * span), t->temp_min, t->temp_max);
         t->temp_touch = now;
         if (final || now - t->temp_pub >= PUB_EVERY_MS) {
             publish_int(t->temp_cmd, t->tmp);
@@ -1039,9 +1041,9 @@ static void parse_tile(tile_t *t, const cJSON *o)
     if (t->type == T_CHART || t->type == T_CAMERA) def = 2;
     if (t->type == T_SCENES || t->type == T_TV || t->type == T_LEAK ||
         t->type == T_WEATHER || t->type == T_CLOCK || t->type == T_TODAY) def = 2;
-    // Набору сцен нужны три ряда для крупной сетки 3×3. Остальные типы
-    // сохраняют прежний предел два ряда.
-    int max_h = t->type == T_SCENES ? 6 : 4;
+    // Набору сцен нужны три ряда для крупной сетки 3×3, камере разрешены
+    // четыре ряда для крупного кадра. Остальные типы сохраняют предел два ряда.
+    int max_h = t->type == T_SCENES ? 6 : t->type == T_CAMERA ? 8 : 4;
     t->h_cells = clampi(jcells(o, "h", def), 1, max_h);
 }
 

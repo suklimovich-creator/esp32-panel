@@ -181,7 +181,6 @@ static lv_point_t s_p0;
 static float s_v0;                    // значение в начале перетаскивания
 static float s_scale_shown;           // где стоит шкала кондиционера (плавно, без шага)
 static int s_sheet;                   // 0 - нет, иначе Z_CHIP/Z_FAN/Z_SWV/Z_SWH/Z_MODEBTN
-static int s_l_axis;                  // свет: ось жеста, 1 - яркость, 2 - теплота
 static int s_l_lvl0, s_l_tmp0;        // свет: значения в начале жеста
 static int s_today_scroll, s_today_scroll_max;  // «Сегодня»: прокрутка полного экрана
 static bool s_today_drag;
@@ -328,13 +327,24 @@ static uint32_t mixc(uint32_t a, uint32_t b, float k)
     return (uint32_t)(r << 16 | g << 8 | bl);
 }
 
-// Оттенок света: минимум шкалы - тёплый край, максимум - холодный (с 0.11).
+// Оттенок света: минимум шкалы - тёплый край, максимум - холодный.
+// Переход через белую середину, как light_hue у wb-svg-panel: прямой микс
+// тёплого и холодного в середине давал грязно-серый, переход был незаметен.
 static uint32_t light_tint(const pad_t *p)
 {
     if (!p->temp_cmd || !p->has_tmp) return K_ACTIVE;
     float f = p->temp_max > p->temp_min
               ? (float)(p->l_tmp - p->temp_min) / (p->temp_max - p->temp_min) : 0.5f;
-    return mixc(p->warm, p->cold, f);
+    float t = 1.0f - clampf(f, 0, 1);   // 0 - холодный, 1 - тёплый
+    return t < 0.5f ? mixc(p->cold, 0xECE6DC, t * 2)
+                    : mixc(0xECE6DC, p->warm, (t - 0.5f) * 2);
+}
+
+// Цвет точки шкалы теплоты: q = 0 холодный край, 1 - тёплый, через середину.
+static uint32_t light_hue_q(const pad_t *p, float q)
+{
+    return q < 0.5f ? mixc(p->cold, 0xECE6DC, q * 2)
+                    : mixc(0xECE6DC, p->warm, (q - 0.5f) * 2);
 }
 
 // Час дня для значка погоды; без сети (время не синхронизировано) - день.
@@ -1289,14 +1299,15 @@ static void light_ball(float cx, float cy, float r, uint32_t tint, bool on, floa
 {
     if (on) {
         for (int i = 4; i >= 0; i--)
-            d_circle(cx, cy, r + 10 + i * 8, tint, (lv_opa_t)(4 + lvl * 9));
+            d_circle(cx, cy, r + 10 + i * 8, tint, (lv_opa_t)(6 + lvl * 16));
     }
-    // объём без градиентов: стопка кругов от тёмного края к светлому блику
+    // объём без градиентов: стопка кругов от тёмного края к светлому блику;
+    // оттенок берётся почти полностью, чтобы переход тёплый-холодный читался
     for (int i = 0; i <= 12; i++) {
         float k = i / 12.0f, rr = r * (1 - k * 0.80f);
-        uint32_t base = on ? mixc(0x2A2B2F, tint, 0.35f + 0.65f * lvl)
-                           : mixc(0x2A2B2F, tint, 0.35f);
-        uint32_t col = mixc(base, on ? 0xFFFFFF : 0x8E8E90, k * k * (on ? 0.55f : 0.22f));
+        uint32_t base = on ? mixc(0x2A2B2F, tint, 0.60f + 0.40f * lvl)
+                           : mixc(0x2A2B2F, tint, 0.45f);
+        uint32_t col = mixc(base, on ? 0xFFFFFF : 0x8E8E90, k * k * (on ? 0.45f : 0.22f));
         d_circle(cx - r * 0.26f * k, cy - r * 0.30f * k, rr, col, LV_OPA_COVER);
     }
     d_border((int)(cx - r), (int)(cy - r), (int)(2 * r) + 1, (int)(2 * r) + 1,
@@ -1338,7 +1349,7 @@ static void draw_light(pad_t *p)
         for (int i = 0; i <= 20; i++) {
             float q = i / 20.0f;
             float ad = (140 - 100 * q) * (float)M_PI / 180;
-            uint32_t c = mixc(p->cold, p->warm, q);
+            uint32_t c = light_hue_q(p, q);
             d_circle(LT_CX + LT_AR * cosf(ad), LT_CY + LT_AR * sinf(ad), 3.1f,
                      c, on ? LV_OPA_COVER : 170);
         }
@@ -1347,28 +1358,16 @@ static void draw_light(pad_t *p)
                  on ? K_INK : 0x8E8E90, LV_OPA_COVER);
     }
 
-    // значение крупно в шаре; во время горизонтального жеста - теплота
-    char b[32];
-    if (s_l_axis == 2 && p->temp_cmd) {
-        if (p->temp_unit && !strcmp(p->temp_unit, "percent"))
-            snprintf(b, sizeof(b), "%d%%", (int)lroundf(warm * 100));
-        else snprintf(b, sizeof(b), "%d", p->l_tmp);
-        d_text(F60, K_INK, LV_OPA_COVER, LT_CX, LT_CY + 16, 1, b);
-        d_text(F13, K_DIM, LV_OPA_COVER, LT_CX, LT_CY + 52, 1,
-               p->temp_unit && !strcmp(p->temp_unit, "percent") ? "теплота" : "теплота, К");
-    } else {
-        snprintf(b, sizeof(b), "%d%%", p->has_lvl ? (int)lroundf(lvl * 100) : 0);
-        d_text(F60, on ? K_INK : K_DIM, LV_OPA_COVER, LT_CX, LT_CY + 16, 1, b);
-        d_text(F13, K_DIM, LV_OPA_COVER, LT_CX, LT_CY + 52, 1, "яркость");
-    }
+    // На шаре чисел нет: значения читаются в строке под шаром, а цвет шара
+    // сам показывает теплоту.
 
     // Кнопки на окружности, как у панели: яркость сверху/снизу, теплота
     // слева (холоднее) и справа (теплее).
     struct { float deg; int z; const char *txt; const char *icon; uint32_t col; } btns[] = {
         {270, Z_PLUS, "+", NULL, K_INK},
         {90, Z_MINUS, "−", NULL, K_INK},
-        {150, Z_TPLUS, NULL, IC_SNOW, 0xBCD8FF},
-        {30, Z_TMINUS, NULL, IC_HEAT, 0xFFB46B},
+        {150, Z_TPLUS, NULL, IC_SNOW, 0x56AAFF},
+        {30, Z_TMINUS, NULL, IC_HEAT, 0xFF9337},
     };
     for (size_t i = 0; i < sizeof(btns) / sizeof(btns[0]); i++) {
         if ((btns[i].z == Z_TPLUS || btns[i].z == Z_TMINUS) && !p->temp_cmd) continue;
@@ -1380,7 +1379,7 @@ static void draw_light(pad_t *p)
         zone((int)x - 36, (int)y - 36, (int)x + 36, (int)y + 36, btns[i].z, 0);
     }
 
-    // строка значений под шаром
+    // строка значений под шаром - теперь это единственный цифровой индикатор
     char v[80];
     if (p->temp_cmd) {
         char tb[24];
@@ -1391,7 +1390,7 @@ static void draw_light(pad_t *p)
     } else {
         snprintf(v, sizeof(v), "яркость  %d %%", p->has_lvl ? (int)lroundf(lvl * 100) : 0);
     }
-    d_text(F13, K_DIM, LV_OPA_COVER, 240, 452, 1, v);
+    d_text(F17, K_INK, LV_OPA_COVER, 240, 452, 1, v);
     d_head(p, p->power_cmd != NULL, on);
 }
 
@@ -1647,16 +1646,36 @@ static bool forecast_graph(const pad_t *p, float X0, float X1, float Y0, float Y
         if (i == imin || i == imax) d_circle(xx, yy, 3.2f * scale, 0x3B8FD4, LV_OPA_COVER);
         prevx = xx; prevy = yy;
     }
-    // На компактной плитке экстремумы обозначены только точками, как в WB:
-    // числовые подписи здесь наезжали на текущую температуру и описание.
-    if (!compact && imin != imax) {
+    // Экстремумы подписаны числами. На компактной плитке подпись без градуса
+    // и прижата к краю графика, чтобы не вылезти за его пределы.
+    float ex_tx[2] = {-1e9f, -1e9f}, ex_tw[2] = {0, 0};
+    if (imin != imax) {
         for (int k = 0; k < 2; k++) {
             int i = k ? imax : imin;
             float xx = X0 + xstep * i;
             float yy = Y1 - (Y1 - Y0) * (tv[i] - grid_lo) / (grid_hi - grid_lo);
-            snprintf(b, sizeof(b), "%.0f°", tv[i]);
-            float dy = k || yy > Y1 - 16 * scale ? -6.0f : 12.0f;
-            d_text(font, 0x3B8FD4, LV_OPA_COVER, xx, yy + dy * scale, 1, b);
+            snprintf(b, sizeof(b), compact ? "%.0f" : "%.0f°", tv[i]);
+            float tx = xx;
+            if (compact) {
+                int tw = text_w(font, b);
+                tx = clampf(xx, X0 + tw / 2.0f, X1 - tw / 2.0f);
+                ex_tx[k] = tx;
+                ex_tw[k] = tw;
+            }
+            float dy = k || yy > Y1 - 16 * scale ? (compact ? -10.0f : -6.0f) : 12.0f;
+            float ty = yy + dy * scale;
+            // Максимум подписан над точкой даже у верхней линии сетки:
+            // внизу он наезжал бы на кривую и описание.
+            if (compact && ty > Y1 + 4 * scale) ty = yy - 6 * scale;
+            if (compact) {
+                // Тёмная подложка: на плитке описание погоды лежит поверх
+                // графика, и без чипа подпись сливается с ним и с кривой.
+                int tw = text_w(font, b), lh = font->line_height;
+                d_rect((int)(tx - tw / 2.0f - 3 * scale), (int)(ty - lh * 0.82f),
+                       tw + (int)(6 * scale), (int)(lh * 1.05f), (int)(3 * scale),
+                       0x141519, 200);
+            }
+            d_text(font, 0x3B8FD4, LV_OPA_COVER, tx, ty, 1, b);
         }
     }
     if (p->n_code > 0) {
@@ -1672,6 +1691,15 @@ static bool forecast_graph(const pad_t *p, float X0, float X1, float Y0, float Y
             (!compact || xx > X0 + 30 * scale)) {
             if (compact) snprintf(b, sizeof(b), "%02d", hh);
             else snprintf(b, sizeof(b), "%02d:00", hh);
+            // Метка часа не должна слипаться с подписью экстремума рядом.
+            if (compact) {
+                float hw = text_w(font, b);
+                bool clash = false;
+                for (int k = 0; k < 2; k++)
+                    if (fabsf(xx - ex_tx[k]) < (hw + ex_tw[k]) / 2.0f + 3 * scale)
+                        clash = true;
+                if (clash) continue;
+            }
             d_text(font, K_DIM, LV_OPA_COVER, xx,
                    Y1 + (compact ? -2.0f : 17.0f) * scale, 1, b);
         }
@@ -1711,7 +1739,8 @@ static void draw_weather(pad_t *p)
         d_text(F13, K_INK, LV_OPA_COVER, xx + 64, 192, 1, vals[i]);
     }
 
-    if (!forecast_graph(p, 54, 452, 216, 384, F13, 1.0f, false))
+    // График поднят выше: почти вплотную под плашками показателей.
+    if (!forecast_graph(p, 54, 452, 204, 384, F13, 1.0f, false))
         d_text(F17, K_DIM, LV_OPA_COVER, 240, 304, 1, "Прогноз пока не получен");
     d_head(p, false, true);
 }
@@ -2007,7 +2036,6 @@ static void touch_cb(lv_event_t *e)
         s_today_scroll0 = s_today_scroll;
         s_v0 = p->kind == PAD_COVER ? shown_pos(p) : p->has_target ? p->v_target : (p->min + p->max) / 2;
         s_scale_shown = s_v0;
-        s_l_axis = 0;
         s_l_lvl0 = p->l_lvl;
         s_l_tmp0 = p->l_tmp;
         redraw();
@@ -2042,19 +2070,26 @@ static void touch_cb(lv_event_t *e)
             p->has_pos = true;
             s_moved = true;
         } else if (id == Z_LIGHT && s_moved) {
-            // свет: вертикаль - яркость, горизонталь - теплота (вправо - теплее)
-            if (!s_l_axis) s_l_axis = abs(dy) >= abs(dx) ? 1 : 2;
-            if (s_l_axis == 1 && p->level_cmd) {
+            // свет: одним жестом вертикаль меняет яркость, горизонталь -
+            // теплоту (вправо - теплее); оси действуют одновременно
+            if (p->level_cmd) {
                 int mx = p->lvl_max > 0 ? p->lvl_max : 100;
-                p->l_lvl = (int)lroundf(clampf(s_l_lvl0 - dy * mx / 220.0f, 0, mx));
-                p->has_lvl = true;
-                p->dirty_lvl = true;
-            } else if (s_l_axis == 2 && p->temp_cmd) {
+                int nl = (int)lroundf(clampf(s_l_lvl0 - dy * mx / 220.0f, 0, mx));
+                if (nl != p->l_lvl) {
+                    p->l_lvl = nl;
+                    p->has_lvl = true;
+                    p->dirty_lvl = true;
+                }
+            }
+            if (p->temp_cmd) {
                 float range = (float)(p->temp_max - p->temp_min);
-                p->l_tmp = (int)lroundf(clampf(s_l_tmp0 - dx * range / 260.0f,
-                                               p->temp_min, p->temp_max));
-                p->has_tmp = true;
-                p->dirty_tmp = true;
+                int nt = (int)lroundf(clampf(s_l_tmp0 - dx * range / 260.0f,
+                                             p->temp_min, p->temp_max));
+                if (nt != p->l_tmp) {
+                    p->l_tmp = nt;
+                    p->has_tmp = true;
+                    p->dirty_tmp = true;
+                }
             }
             if (!powered(p) && p->power_cmd) {   // потянули по выключенному - включить
                 mq_publish(p->power_cmd, p->on_v ? p->on_v : "1");
@@ -2167,8 +2202,9 @@ pad_t *pad_parse(const cJSON *tile, const char *title)
         p->temp_max = (int)jf(o, "temp_max", 100);
         if (p->temp_max <= p->temp_min) p->temp_max = p->temp_min + 1;
         p->temp_unit = js(o, "unit");
-        p->cold = hexcol(jsv(o, "cold"), 0xBCD8FF);
-        p->warm = hexcol(jsv(o, "warm"), 0xFFB46B);
+        // Умолчания - как у панели (pads-light.js): иначе переход бледный.
+        p->cold = hexcol(jsv(o, "cold"), 0x56AAFF);
+        p->warm = hexcol(jsv(o, "warm"), 0xFF9337);
         if (!p->level || !p->level_cmd) goto bad;
     } else if (!strcmp(k->valuestring, "tv")) {
         // Телевизор (с 0.11): клавиши - <base><имя>/on, питание - <base>power/on.
@@ -2554,8 +2590,13 @@ static void tile_tv(const pad_t *p, int x, int y, int w, int h)
     char b[96];
     upcase(b, sizeof(b), p->title ? p->title : "");
     d_text(P_F12, K_DIM, LV_OPA_COVER, x + PS(12), y + PS(20), 0, b);
-    d_icon(icon_path("tv"), x + w / 2.0f, y + h * 0.44f, PS(42), 2.6f * s_tile_scale,
-           on ? K_INK : K_DIM, on ? LV_OPA_COVER : 160);
+    // Значок только в свободной середине между названием и статусом: иначе
+    // на низкой плитке он наезжал на строку статуса.
+    float top = y + PS(28), bot = y + h - PS(46);
+    float isz = fminf(PS(42), fminf((bot - top) * 0.70f, w * 0.30f));
+    if (isz > PS(10))
+        d_icon(icon_path("tv"), x + w / 2.0f, (top + bot) / 2.0f, isz,
+               2.6f * s_tile_scale, on ? K_INK : K_DIM, on ? LV_OPA_COVER : 160);
     const cJSON *st = p->states && p->mode_now[0] ? cJSON_GetObjectItem(p->states, p->mode_now) : NULL;
     d_text(P_F13, on ? K_ACTIVE : K_DIM, LV_OPA_COVER, x + w / 2.0f, y + h - PS(28), 1,
            cJSON_IsString(st) ? st->valuestring : p->link_on ? "" : "Нет связи");
@@ -2602,8 +2643,40 @@ static void tile_leak(const pad_t *p, int x, int y, int w, int h)
     }
 
     d_text(P_F12, K_DIM, LV_OPA_COVER, x + PS(12), y + PS(20), 0, b);
-    d_icon(icon_path("leak"), x + w / 2.0f, y + h * 0.42f, PS(40), 2.6f * s_tile_scale,
-           col, LV_OPA_COVER);
+
+    // Датчики заполняют плитку сеткой по её размеру: сколько колонок
+    // помещается по ширине, столько и в ряду; неполный нижний ряд
+    // центрируется. Узкая высокая плитка - столбик, широкая - строка,
+    // квадратная - например 2 в первом ряду и 1 во втором.
+    int n = p->nsensors;
+    if (n) {
+        int cols = (int)(w / PS(110));
+        if (cols < 1) cols = 1;
+        if (cols > n) cols = n;
+        int rows = (n + cols - 1) / cols;
+        float top = y + PS(30), bot = y + h - PS(36);
+        if (bot <= top) bot = top + 1;
+        float cellh = (bot - top) / rows, cellw = w / (float)cols;
+        lv_area_t clip_old2 = L->_clip_area, ta2 = {x + PS(2), y, x + w - PS(3), y + h - 1}, cl2;
+        bool clipped2 = lv_area_intersect(&cl2, &clip_old2, &ta2);
+        if (clipped2) L->_clip_area = cl2;
+        for (int i = 0; i < n; i++) {
+            int r = i / cols, cn = i % cols;
+            int in_row = (r == rows - 1) ? n - r * cols : cols;
+            float off = (cols - in_row) * cellw / 2.0f;
+            float ccx = x + off + cn * cellw;
+            float ccy = top + r * cellh + cellh / 2.0f;
+            bool swet = p->sensors[i].wet;
+            uint32_t scol = swet ? LEAK_RED : LEAK_GREEN;
+            d_circle(ccx + PS(11), ccy - PS(5), PS(4), scol, LV_OPA_COVER);
+            d_text_ellipsize(P_F12, swet ? LEAK_RED : K_INK, ccx + PS(21), ccy, 0,
+                             cellw - PS(26), p->sensors[i].title ? p->sensors[i].title : "?");
+        }
+        if (clipped2) L->_clip_area = clip_old2;
+    } else {
+        d_icon(icon_path("leak"), x + w / 2.0f, y + h * 0.42f, PS(40), 2.6f * s_tile_scale,
+               col, LV_OPA_COVER);
+    }
     if (p->alarm_on) {
         snprintf(b, sizeof(b), "Сработала защита");
         d_text(P_F13, LEAK_RED, LV_OPA_COVER, x + w / 2.0f, y + h - PS(28), 1, b);
@@ -2825,10 +2898,11 @@ static void tile_weather(const pad_t *p, int x, int y, int w, int h)
     if (clipped) L->_clip_area = cl;
 
     if (h >= PS(90))
-        // График немного расширен по вертикали; сверху остаётся текущая
-        // погода, снизу — часы и название плитки.
+        // График поднят выше: почти от верха плитки, а текущие значение и
+        // описание поверх него, как в forecast у wb-svg-panel. Снизу
+        // остаются название плитки и строка показателей.
         forecast_graph(p, x + PS(3), x + w - PS(3),
-                       y + h * 0.36f, y + h * 0.86f,
+                       y + PS(34), y + h * 0.88f,
                        P_F12, s_tile_scale, true);
 
     int hour = ui_hour_now();
@@ -2969,7 +3043,6 @@ void pad_open(pad_t *p)
     s_pz = -1;
     s_sheet = 0;
     s_nz = 0;
-    s_l_axis = 0;
     s_today_scroll = 0;
     s_today_scroll_max = 0;
     s_today_drag = false;

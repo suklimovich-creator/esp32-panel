@@ -34,8 +34,10 @@ def image_info(path: Path) -> tuple[str, str]:
     def text(start: int, size: int) -> str:
         return head[start:start + size].split(b"\0", 1)[0].decode("ascii")
 
-    version = text(APP_DESC_OFFSET + 12, 32)
-    project = text(APP_DESC_OFFSET + 44, 32)
+    # esp_app_desc_t: magic(4), secure_version(4), reserv1(8),
+    # затем version[32] и project_name[32].
+    version = text(APP_DESC_OFFSET + 16, 32)
+    project = text(APP_DESC_OFFSET + 48, 32)
     if project != PROJECT:
         raise ValueError(f"это прошивка {project!r}, а не {PROJECT}")
     parts = version.split(".")

@@ -6,7 +6,7 @@ ESP32-4848S040 — ESP32-S3-N16R8 (16 МБ flash, 8 МБ octal PSRAM), матр�
 LVGL 9.2.2. Язык проекта, комментариев и интерфейса — русский; отвечайте
 и комментируйте по-русски.
 
-Текущая версия — `PROJECT_VER` в корневом `CMakeLists.txt` (сейчас 0.11.10).
+Текущая версия — `PROJECT_VER` в корневом `CMakeLists.txt` (сейчас 0.11.12).
 Изменения описываются в `CHANGELOG.md`, план — в `docs/ROADMAP.md`,
 пользовательская документация — в `README.md`.
 
@@ -86,7 +86,7 @@ MQTT, синхронизация раскладки, история, OTA.
 | `main/lv_mem_psram.c` | память LVGL в PSRAM |
 | `main/fonts/` | Inter (SIL OFL), встроены через EMBED_FILES, рисуются TinyTTF |
 
-`tools/release.py` — упаковка релиза; `tools/sim/` — симулятор (см. ниже);
+`tools/release.py` — упаковка уже собранного релиза без повторной сборки; `tools/sim/` — симулятор (см. ниже);
 `.github/workflows/tag.yml` — автотег `v<PROJECT_VER>` после пуша в main.
 
 ## Соглашения по коду

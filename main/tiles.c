@@ -65,16 +65,16 @@ static const char *TAG = "tiles";
 #define ECHO_IGNORE_MS 1500     // после касания не дёргать плитку эхом брокера
 #define DRAG_SLOP 8
 
-// Цвета плиток (graphite)
-#define T_BG1    0x26272B       // плитка: сверху
-#define T_BG2    0x1C1D20       //          снизу
-#define T_EDGE   0x303135
-#define T_ON1    0x4D3B22       // включённая: тёплый свет сверху
-#define T_ON2    0x24211D
-#define T_ACT    0xF2A23A       // рамка включённой, ползунки
-#define T_INK    0xF2F2F4
-#define T_DIM    0x8E8E90
-#define T_TRACK  0x3A3B40
+// Цвета плиток - роли палитры темы (theme.h), по умолчанию графит.
+#define T_BG1    TH(TILE_HI)        // плитка: сверху
+#define T_BG2    TH(TILE_BG)        //          снизу
+#define T_EDGE   TH(TILE_BORDER)
+#define T_ON1    TH(TILE_ON_HI)     // включённая: тёплый свет сверху
+#define T_ON2    TH(TILE_ON)
+#define T_ACT    TH(ACTIVE)         // рамка включённой
+#define T_INK    TH(TEXT)
+#define T_DIM    TH(TEXT_DIM)
+#define T_TRACK  TH(TRACK)
 
 typedef enum { T_SWITCH, T_DIMMER, T_SCENE, T_SENSOR, T_INFO, T_CHART, T_CAMERA,
                T_SCENES, T_TV, T_LEAK, T_WEATHER, T_CLOCK, T_TODAY, T_UNKNOWN } ttype_t;
@@ -281,7 +281,7 @@ static void d_card(int x, int y, int w, int h, bool on, bool pressed)
     int r = TS(14);
     if (on) d_vgrad(x, y, w, h, r, T_ON1, LV_OPA_COVER, T_ON2, LV_OPA_COVER);
     else d_vgrad(x, y, w, h, r, T_BG1, LV_OPA_COVER, T_BG2, LV_OPA_COVER);
-    if (pressed) d_rect(x, y, w, h, r, 0xFFFFFF, 18);
+    if (pressed) d_rect(x, y, w, h, r, TH(TILE_PRESSED), 18);
     d_border(x, y, w, h, r, on ? TL(2) : TL(1), on ? T_ACT : T_EDGE, LV_OPA_COVER);
 }
 
@@ -293,12 +293,12 @@ static void d_pill(float cx, float y, bool on)
     if (!on) {
         d_rect(x - TS(5), (int)y - TS(4), w + TS(10), h + TS(8), TS(8), T_ACT, 26);
         d_rect(x - TS(2), (int)y - TS(2), w + TS(4), h + TS(4), TS(6), T_ACT, 50);
-        d_rect(x, (int)y, w, h, TS(4), 0xF7B955, LV_OPA_COVER);
-        d_line(x + TS(5), y + h / 2.0f, x + w - TS(5), y + h / 2.0f, TL(2), 0xFFE6B0, LV_OPA_COVER);
+        d_rect(x, (int)y, w, h, TS(4), mix(T_ACT, 0xFFFFFF, 0.2f), LV_OPA_COVER);
+        d_line(x + TS(5), y + h / 2.0f, x + w - TS(5), y + h / 2.0f, TL(2), mix(T_ACT, 0xFFFFFF, 0.65f), LV_OPA_COVER);
     } else {
-        d_rect(x, (int)y, w, h, TS(4), 0x141518, LV_OPA_COVER);
-        d_border(x, (int)y, w, h, TS(4), TL(1), 0x3A3B40, LV_OPA_COVER);
-        d_line(x + TS(6), y + h / 2.0f, x + w - TS(6), y + h / 2.0f, TL(1.5f), 0x7A7B80, LV_OPA_COVER);
+        d_rect(x, (int)y, w, h, TS(4), TH(WELL), LV_OPA_COVER);
+        d_border(x, (int)y, w, h, TS(4), TL(1), T_TRACK, LV_OPA_COVER);
+        d_line(x + TS(6), y + h / 2.0f, x + w - TS(6), y + h / 2.0f, TL(1.5f), mix(T_TRACK, T_INK, 0.35f), LV_OPA_COVER);
     }
 }
 
@@ -320,8 +320,8 @@ static void d_sphere(float cx, float cy, float r, bool on, float bright)
 
 static void d_knob(float x, float y, float r)
 {
-    d_circle(x, y, r + 1.6f * s_scale, 0x17181B, LV_OPA_COVER);
-    d_circle(x, y, r, 0xFFFFFF, LV_OPA_COVER);
+    d_circle(x, y, r + 1.6f * s_scale, TH(WELL), LV_OPA_COVER);
+    d_circle(x, y, r, TH(THUMB), LV_OPA_COVER);
 }
 
 static void d_title(const tile_t *t, int x, int y, int w, int h)
@@ -348,14 +348,14 @@ static void draw_light_sq(const tile_t *t, int x, int y, int w, int h)
         d_sphere(cx, cy, r, on, f);
         d_arc(cx, cy, ra, 3 * k, 160, 300, T_TRACK, LV_OPA_COVER);
         float a = 160 + 140 * f;
-        if (f > 0.005f) d_arc(cx, cy, ra, 3 * k, 160, a, on ? T_ACT : 0x9A9BA0, LV_OPA_COVER);
+        if (f > 0.005f) d_arc(cx, cy, ra, 3 * k, 160, a, on ? TH(ACCENT) : TH(INACTIVE), LV_OPA_COVER);
         float rad = a * (float)M_PI / 180;
         d_knob(cx + (ra + 1.5f * k) * cosf(rad), cy + (ra + 1.5f * k) * sinf(rad), 4.2f * k);
         if (t->temp) {
             float rd = r + 12 * k;
             for (int i = 0; i <= 20; i++) {
                 float q = i / 20.0f, ad = (148 - 116 * q) * (float)M_PI / 180;
-                uint32_t c = q < 0.5f ? mix(0x5F9BE0, 0xD2D2D2, q * 2) : mix(0xD2D2D2, 0xE89A4A, q * 2 - 1);
+                uint32_t c = q < 0.5f ? mix(TH(CCT_COLD), TH(CCT_MID), q * 2) : mix(TH(CCT_MID), TH(CCT_WARM), q * 2 - 1);
                 d_circle(cx + rd * cosf(ad), cy + rd * sinf(ad), 1.7f * k, c, on ? LV_OPA_COVER : 150);
             }
             int span = t->temp_max - t->temp_min;
@@ -367,15 +367,15 @@ static void draw_light_sq(const tile_t *t, int x, int y, int w, int h)
         // пластина диммера с рёбрами и ползунок справа
         int px = x + (int)(w * 0.265f), py = y + (int)(21 * k);
         int pw = (int)(w * 0.36f), ph = (int)(89 * k);
-        d_rect(px, py, pw, ph, TS(7), 0x2B2C30, LV_OPA_COVER);
-        d_border(px, py, pw, ph, TS(7), TL(1), 0x3A3B3F, LV_OPA_COVER);
+        d_rect(px, py, pw, ph, TS(7), TH(SURFACE), LV_OPA_COVER);
+        d_border(px, py, pw, ph, TS(7), TL(1), T_TRACK, LV_OPA_COVER);
         d_vgrad(px + TS(4), py + TS(4), pw - TS(8), ph - TS(8), TS(3),
-                0x18191C, LV_OPA_COVER, 0x232428, LV_OPA_COVER);
+                TH(WELL), LV_OPA_COVER, mix(TH(WELL), TH(SURFACE), 0.6f), LV_OPA_COVER);
         for (int yy = py + TS(7); yy < py + ph - TS(6); yy += TL(5))
-            d_line(px + TS(6), yy, px + pw - TS(6), yy, 1.4f * k, 0x4A4B50, 170);
+            d_line(px + TS(6), yy, px + pw - TS(6), yy, 1.4f * k, TH(PRESSED), 170);
         float bx = x + w * 0.70f, by1 = y + h * 0.27f, by2 = y + h * 0.73f;
         d_line(bx, by1, bx, by2, 4 * k, T_TRACK, LV_OPA_COVER);
-        if (f > 0.005f) d_line(bx, by2 - (by2 - by1) * f, bx, by2, 4 * k, on ? T_ACT : 0x9A9BA0, LV_OPA_COVER);
+        if (f > 0.005f) d_line(bx, by2 - (by2 - by1) * f, bx, by2, 4 * k, on ? TH(ACCENT) : TH(INACTIVE), LV_OPA_COVER);
     }
     d_pill(x + w / 2.0f, y + TS(4), on);
     pct_text(t, b, sizeof(b));
@@ -394,10 +394,10 @@ static void draw_light_strip(const tile_t *t, int x, int y, int w, int h)
     if (t->light) {
         d_sphere(x + TS(33), cy, TS(21), on, f);
     } else {
-        d_rect(x + TS(18), (int)cy - TS(24), TS(30), TS(48), TS(5), 0x2B2C30, LV_OPA_COVER);
-        d_border(x + TS(18), (int)cy - TS(24), TS(30), TS(48), TS(5), TL(1), 0x3A3B3F, LV_OPA_COVER);
+        d_rect(x + TS(18), (int)cy - TS(24), TS(30), TS(48), TS(5), TH(SURFACE), LV_OPA_COVER);
+        d_border(x + TS(18), (int)cy - TS(24), TS(30), TS(48), TS(5), TL(1), T_TRACK, LV_OPA_COVER);
         for (int yy = (int)cy - TS(19); yy < cy + TS(20); yy += TL(5))
-            d_line(x + TS(22), yy, x + TS(44), yy, 1.2f * s_scale, 0x4A4B50, 170);
+            d_line(x + TS(22), yy, x + TS(44), yy, 1.2f * s_scale, TH(PRESSED), 170);
     }
     int tx = x + TS(64);
     d_text_fit(T_F14, T_INK, tx, cy - TS(3), w - (tx - x) - TS(60), t->title);
@@ -407,12 +407,12 @@ static void draw_light_strip(const tile_t *t, int x, int y, int w, int h)
     float bx1 = tx, bx2 = x + w - TS(14), byy = y + h - TS(17);
     d_line(bx1, byy, bx2, byy, 4 * s_scale, T_TRACK, LV_OPA_COVER);
     if (f > 0.005f)
-        d_line(bx1, byy, bx1 + (bx2 - bx1) * f, byy, 4 * s_scale, on ? T_ACT : 0x9A9BA0, LV_OPA_COVER);
+        d_line(bx1, byy, bx1 + (bx2 - bx1) * f, byy, 4 * s_scale, on ? TH(ACCENT) : TH(INACTIVE), LV_OPA_COVER);
     if (t->temp) {
         int span = t->temp_max - t->temp_min;
         float q = span ? 1 - clampi(t->tmp - t->temp_min, 0, span) / (float)span : 0.5f;
         d_circle(bx1 + (bx2 - bx1) * q, byy + TS(7), 2.2f * s_scale,
-                 mix(0x5F9BE0, 0xE89A4A, q), LV_OPA_COVER);
+                 mix(TH(CCT_COLD), TH(CCT_WARM), q), LV_OPA_COVER);
     }
 }
 
@@ -425,23 +425,23 @@ static void draw_switch(const tile_t *t, int x, int y, int w, int h)
         float k = s_scale * h / (float)s_row_h;
         int rw = TS(46), rh = (int)(92 * k);
         int rx = x + (w - rw) / 2, ry = y + (int)(15 * k);
-        d_rect(rx, ry, rw, rh, TS(12), 0x1C1D20, LV_OPA_COVER);
+        d_rect(rx, ry, rw, rh, TS(12), T_BG2, LV_OPA_COVER);
         if (on) d_vgrad(rx, ry + rh / 2, rw, rh - rh / 2, TS(12),
-                        0x3A3B40, LV_OPA_COVER, 0x2E2F34, LV_OPA_COVER);
+                        T_TRACK, LV_OPA_COVER, mix(T_TRACK, T_BG2, 0.3f), LV_OPA_COVER);
         else d_line(rx + TS(12), ry + rh / 2.0f, rx + rw - TS(12), ry + rh / 2.0f,
-                    1.5f * s_scale, 0x0E0F11, LV_OPA_COVER);
-        d_border(rx, ry, rw, rh, TS(12), TL(1), 0x3A3B40, LV_OPA_COVER);
+                    1.5f * s_scale, TH(WELL), LV_OPA_COVER);
+        d_border(rx, ry, rw, rh, TS(12), TL(1), T_TRACK, LV_OPA_COVER);
         d_pill(rx + rw / 2.0f, ry + TS(9), on);
         d_title(t, x, y, w, h);
     } else {
         int s = h - TS(16), rx = x + TS(8), ry = y + TS(8);
-        d_vgrad(rx, ry, s, s, TS(12), 0x2E2F33, LV_OPA_COVER, 0x222326, LV_OPA_COVER);
-        d_border(rx, ry, s, s, TS(12), TL(1), 0x3A3B40, LV_OPA_COVER);
+        d_vgrad(rx, ry, s, s, TS(12), mix(T_TRACK, T_BG2, 0.35f), LV_OPA_COVER, mix(T_TRACK, T_BG2, 0.85f), LV_OPA_COVER);
+        d_border(rx, ry, s, s, TS(12), TL(1), T_TRACK, LV_OPA_COVER);
         float cx = rx + s / 2.0f, cy = ry + s / 2.0f;
-        d_line(cx, ry + TS(6), cx, ry + s - TS(6), TL(1), 0x101113, LV_OPA_COVER);
-        d_rect((int)cx - TS(5), (int)cy - TS(10), TS(10), TS(20), TS(4), 0x141518, LV_OPA_COVER);
-        d_border((int)cx - TS(5), (int)cy - TS(10), TS(10), TS(20), TS(4), TL(1), 0x3A3B40, LV_OPA_COVER);
-        d_line(cx, cy - TS(4), cx, cy + TS(4), TL(2), on ? 0xFFE6B0 : 0x9A9BA0, LV_OPA_COVER);
+        d_line(cx, ry + TS(6), cx, ry + s - TS(6), TL(1), TH(WELL), LV_OPA_COVER);
+        d_rect((int)cx - TS(5), (int)cy - TS(10), TS(10), TS(20), TS(4), TH(WELL), LV_OPA_COVER);
+        d_border((int)cx - TS(5), (int)cy - TS(10), TS(10), TS(20), TS(4), TL(1), T_TRACK, LV_OPA_COVER);
+        d_line(cx, cy - TS(4), cx, cy + TS(4), TL(2), on ? mix(T_ACT, 0xFFFFFF, 0.65f) : TH(INACTIVE), LV_OPA_COVER);
         d_text_fit(T_F14, T_INK, rx + s + TS(12), cy + TS(5), w - s - TS(32), t->title);
     }
 }
@@ -504,11 +504,11 @@ static void draw_info(const tile_t *t, int x, int y, int w, int h)
     if (t->pad) pad_power(t->pad, &on);
     if (t->pad && square) d_card(x, y, w, h, false, false);
     if (t->pad && pad_tile(t->pad, x, y, w, h, C_BG, s_scale)) {
-        if (t->pressed) d_rect(x, y, w, h, TS(14), 0xFFFFFF, 18);
+        if (t->pressed) d_rect(x, y, w, h, TS(14), TH(TILE_PRESSED), 18);
         return;
     }
     d_card(x, y, w, h, false, t->pressed);
-    if (t->active && on) d_border(x, y, w, h, TS(14), TL(1), 0x6A5530, LV_OPA_COVER);
+    if (t->active && on) d_border(x, y, w, h, TS(14), TL(1), mix(T_BG2, T_ACT, 0.4f), LV_OPA_COVER);
     d_text_fit(T_F12, T_DIM, x + TS(12), y + TS(19), w - TS(24), t->title);
     char b[160];
     int vy = y + TS(square ? 54 : 44);
@@ -612,8 +612,8 @@ static void draw_scenes(const tile_t *t, int x, int y, int w, int h)
         if (!scene_key_rect(t, x, y, w, h, i, &r)) continue;
         int kw = lv_area_get_width(&r), kh = lv_area_get_height(&r);
         bool act = t->key_flash == i || (t->pressed && t->key_pressed == i);
-        d_rect(r.x1, r.y1, kw, kh, TS(10), act ? 0x4D3B22 : 0x2B2C30, LV_OPA_COVER);
-        d_border(r.x1, r.y1, kw, kh, TS(10), TL(1), act ? T_ACT : 0x3A3B40, LV_OPA_COVER);
+        d_rect(r.x1, r.y1, kw, kh, TS(10), act ? T_ON1 : TH(SURFACE), LV_OPA_COVER);
+        d_border(r.x1, r.y1, kw, kh, TS(10), TL(1), act ? T_ACT : T_TRACK, LV_OPA_COVER);
         if (t->keys[i].level > 0.01f) {
             int lw = (int)((kw - TS(16)) * (t->keys[i].level > 1 ? 1 : t->keys[i].level));
             d_rect(r.x1 + TS(8), r.y2 - TS(3), lw, TS(2), TS(1), T_ACT, 140);
@@ -646,7 +646,7 @@ static void draw_pad_tile(const tile_t *t, int x, int y, int w, int h)
 {
     d_card(x, y, w, h, t->pad && pad_active(t->pad), false);
     if (t->pad) pad_tile(t->pad, x, y, w, h, C_BG, s_scale);
-    if (t->pressed) d_rect(x, y, w, h, TS(14), 0xFFFFFF, 18);
+    if (t->pressed) d_rect(x, y, w, h, TS(14), TH(TILE_PRESSED), 18);
 }
 
 static void tile_draw_cb(lv_event_t *e)
@@ -1057,7 +1057,7 @@ static void show_page(int idx)
         if (on) lv_obj_remove_flag(s_pages[i], LV_OBJ_FLAG_HIDDEN);
         else lv_obj_add_flag(s_pages[i], LV_OBJ_FLAG_HIDDEN);
         lv_obj_set_style_bg_opa(s_tabs[i], on ? LV_OPA_COVER : LV_OPA_TRANSP, 0);
-        lv_obj_set_style_text_color(lv_obj_get_child(s_tabs[i], 0), lv_color_hex(on ? C_TEXT : C_DIM), 0);
+        th_bind(lv_obj_get_child(s_tabs[i], 0), LV_STYLE_TEXT_COLOR, 0, on ? TH_TEXT : TH_TEXT_DIM);
     }
     lv_obj_scroll_to_view(s_tabs[idx], LV_ANIM_ON);
     camera_page_visible(idx);
@@ -1122,9 +1122,9 @@ static lv_obj_t *new_tab(lv_obj_t *tabbar, const char *title, int idx)
     lv_obj_set_style_pad_ver(b, 0, 0);
     lv_obj_set_style_radius(b, 18, 0);
     lv_obj_set_style_shadow_width(b, 0, 0);
-    lv_obj_set_style_bg_color(b, lv_color_hex(C_CARD_ON), 0);
+    th_bind(b, LV_STYLE_BG_COLOR, 0, TH_PANEL_SURFACE_ON);
     lv_obj_set_style_bg_opa(b, LV_OPA_TRANSP, 0);
-    lv_obj_t *l = ui_label(b, f18, C_DIM, title ? title : "…");
+    lv_obj_t *l = th_label(b, f18, TH_TEXT_DIM, title ? title : "…");
     lv_obj_center(l);
     lv_obj_add_event_cb(b, tab_cb, LV_EVENT_CLICKED, (void *)(intptr_t)idx);
     return b;
@@ -1210,7 +1210,7 @@ void tiles_build(void *content_obj, void *tabbar_obj, const char *json)
     cJSON *root = cJSON_Parse(json);
     const cJSON *pages = cJSON_GetObjectItem(root, "pages");
     if (!cJSON_IsArray(pages) || cJSON_GetArraySize(pages) == 0) {
-        lv_obj_t *l = ui_label(content, f18, C_DIM, "Раскладка пустая или с ошибкой.\nЗагрузите JSON на веб-странице экрана.");
+        lv_obj_t *l = th_label(content, f18, TH_TEXT_DIM, "Раскладка пустая или с ошибкой.\nЗагрузите JSON на веб-странице экрана.");
         lv_obj_center(l);
         ESP_LOGE(TAG, "в раскладке нет страниц");
         cJSON_Delete(root);
@@ -1274,12 +1274,12 @@ void tiles_build(void *content_obj, void *tabbar_obj, const char *json)
     if (s_saver_after > 0 && cJSON_IsArray(spages) && cJSON_GetArraySize(spages) > 0) {
         s_saver_scr = lv_obj_create(NULL);
         lv_obj_remove_style_all(s_saver_scr);
-        lv_obj_set_style_bg_color(s_saver_scr, lv_color_hex(C_BG), 0);
+        th_bind(s_saver_scr, LV_STYLE_BG_COLOR, 0, TH_PANEL_BG);
         lv_obj_set_style_bg_opa(s_saver_scr, LV_OPA_COVER, 0);
         lv_obj_add_flag(s_saver_scr, LV_OBJ_FLAG_CLICKABLE);
         lv_obj_remove_flag(s_saver_scr, LV_OBJ_FLAG_SCROLLABLE);
         lv_obj_add_event_cb(s_saver_scr, saver_touch_cb, LV_EVENT_PRESSED, NULL);
-        s_saver_clock = ui_label(s_saver_scr, f22, C_DIM, "--:--");
+        s_saver_clock = th_label(s_saver_scr, f22, TH_TEXT_DIM, "--:--");
         lv_obj_align(s_saver_clock, LV_ALIGN_TOP_RIGHT, -12, 15);
         // контент повторяет главный экран: 480x424 от y=56
         lv_obj_t *cont = lv_obj_create(s_saver_scr);

@@ -49,21 +49,26 @@
 #define CLOSE_IDLE_MS 45000     // пульт закрывается сам, если к нему не прикасались
 #define DRAG_SLOP 8
 
-// ---- цвета темы graphite
-#define K_BG      0x1C1D20      // фон пульта кондиционера (цвет плитки)
-#define K_BG2     0x111214      // фон циферблата и штор
-#define K_INK     0xF2F2F4
-#define K_DIM     0x8E8E90      // ink-dim: белый 50% на фоне
-#define K_BTN     0x35363B      // круглые кнопки шапки
-#define K_PILL    0x27282C      // кружки внизу пульта кондиционера
-#define K_CHIP    0x26272A
-#define K_ACTIVE  0xF2A23A
-#define K_ACT_INK 0x17130D
-#define K_COOL    0x6CC4FF
-#define K_HEAT    0xFF9A3D
-#define K_DCOOL   0x3B8FD4
-#define K_DRAPE   0x403F3B
-#define K_SASH    0x111214
+// ---- цвета - роли палитры темы (theme.h), по умолчанию графит
+#define K_BG      TH(TILE_BG)        // фон пульта кондиционера (цвет плитки)
+#define K_BG2     TH(PAD_BG)         // фон циферблата и штор
+#define K_INK     TH(TEXT)
+#define K_DIM     TH(TEXT_DIM)
+#define K_BTN     TH(BUTTON)         // круглые кнопки шапки
+#define K_PILL    TH(SURFACE)        // кружки внизу пульта кондиционера
+#define K_CHIP    TH(SURFACE)
+#define K_PRESS   TH(TRACK)          // нажатый кружок или чип
+#define K_ACTIVE  TH(ACTIVE)
+#define K_ACT_INK TH(TEXT_ON_ACC)
+#define K_COOL    TH(COOL_INK)
+#define K_HEAT    TH(HEATING)
+#define K_DCOOL   TH(COOLING)
+#define K_DRAPE   TH(FABRIC)
+#define K_SASH    TH(SASH)
+// Шкала циферблата: на тёмной теме белая с прозрачностью, как была; на
+// светлой белое пропадает - берём основной текст. Читается при отрисовке,
+// поэтому смена темы подхватывается без перестройки.
+#define K_SCALE   (g_th.dark ? 0xFFFFFFu : TH(TEXT))
 
 typedef struct { const char *v, *t, *word, *icon; uint8_t tone; } opt_t;  // tone: 0, 1 холод, 2 тепло
 typedef enum { PAD_CLIMATE, PAD_COVER, PAD_LIGHT, PAD_TV, PAD_LEAK, PAD_WEATHER, PAD_TODAY } pkind_t;
@@ -327,6 +332,10 @@ static uint32_t mixc(uint32_t a, uint32_t b, float k)
     return (uint32_t)(r << 16 | g << 8 | bl);
 }
 
+// Цвета краёв шкалы теплоты: свои из раскладки или роли темы.
+static uint32_t pad_cold(const pad_t *p) { return p->cold ? p->cold : TH(CCT_COLD); }
+static uint32_t pad_warm(const pad_t *p) { return p->warm ? p->warm : TH(CCT_WARM); }
+
 // Оттенок света: минимум шкалы - тёплый край, максимум - холодный.
 // Переход через белую середину, как light_hue у wb-svg-panel: прямой микс
 // тёплого и холодного в середине давал грязно-серый, переход был незаметен.
@@ -336,15 +345,15 @@ static uint32_t light_tint(const pad_t *p)
     float f = p->temp_max > p->temp_min
               ? (float)(p->l_tmp - p->temp_min) / (p->temp_max - p->temp_min) : 0.5f;
     float t = 1.0f - clampf(f, 0, 1);   // 0 - холодный, 1 - тёплый
-    return t < 0.5f ? mixc(p->cold, 0xECE6DC, t * 2)
-                    : mixc(0xECE6DC, p->warm, (t - 0.5f) * 2);
+    return t < 0.5f ? mixc(pad_cold(p), TH(CCT_MID), t * 2)
+                    : mixc(TH(CCT_MID), pad_warm(p), (t - 0.5f) * 2);
 }
 
 // Цвет точки шкалы теплоты: q = 0 холодный край, 1 - тёплый, через середину.
 static uint32_t light_hue_q(const pad_t *p, float q)
 {
-    return q < 0.5f ? mixc(p->cold, 0xECE6DC, q * 2)
-                    : mixc(0xECE6DC, p->warm, (q - 0.5f) * 2);
+    return q < 0.5f ? mixc(pad_cold(p), TH(CCT_MID), q * 2)
+                    : mixc(TH(CCT_MID), pad_warm(p), (q - 0.5f) * 2);
 }
 
 // Час дня для значка погоды; без сети (время не синхронизировано) - день.
@@ -825,7 +834,7 @@ static void d_fan(float x, float y, int lit, uint32_t c)
 // Шапка: крупная «назад» (пальцем не промахнуться), название, питание.
 static void d_head(const pad_t *p, bool with_power, bool on)
 {
-    d_circle(36, 36, 26, pressed(Z_BACK, 0) ? 0x4A4B50 : K_BTN, LV_OPA_COVER);
+    d_circle(36, 36, 26, pressed(Z_BACK, 0) ? TH(PRESSED) : K_BTN, LV_OPA_COVER);
     d_icon(IC_BACK, 36, 36, 26, 3, K_INK, LV_OPA_COVER);
     zone(0, 0, 84, 84, Z_BACK, 0);
     char t[64];
@@ -833,7 +842,7 @@ static void d_head(const pad_t *p, bool with_power, bool on)
     d_text(F17, K_INK, LV_OPA_COVER, 240, 42, 1, t);
     if (with_power) {
         uint32_t bg = on ? K_ACTIVE : K_BTN;
-        if (pressed(Z_POWER, 0)) bg = on ? 0xD88C2C : 0x4A4B50;
+        if (pressed(Z_POWER, 0)) bg = on ? mixc(K_ACTIVE, 0x000000, 0.12f) : TH(PRESSED);
         d_circle(444, 36, 26, bg, LV_OPA_COVER);
         d_icon(IC_POWER, 444, 36, 26, 2.6f, on ? K_ACT_INK : K_INK, LV_OPA_COVER);
         zone(396, 0, 480, 84, Z_POWER, 0);
@@ -863,13 +872,13 @@ static void d_sheet(const pad_t *p)
     sheet_opts(p, &o, &n, &now, &title, &lh);
     bool sw0 = s_sheet == Z_SWV || s_sheet == Z_SWH;
     zone(0, 0, 479, 479, Z_SHEET, 0);              // мимо - закрыть
-    d_rect(0, 0, 480, 480, 0, 0x000000, LV_OPA_50);
+    d_rect(0, 0, 480, 480, 0, TH(SHADOW), LV_OPA_50);
     int per = n > 4 ? 3 : n;
     int rows = (n + per - 1) / per;
     int bh = sw0 ? 70 : 56, gap = 8, top = 480 - (70 + rows * (bh + gap) + 16);
-    d_rect(0, top, 480, 480 - top + 30, 26, 0x26272A, LV_OPA_COVER);
+    d_rect(0, top, 480, 480 - top + 30, 26, TH(PAD_SHEET), LV_OPA_COVER);
     zone(0, top, 479, 479, Z_NONE, 0);             // по шторке - не закрывать
-    d_rect(220, top + 10, 40, 5, 3, 0x55565C, LV_OPA_COVER);
+    d_rect(220, top + 10, 40, 5, 3, TH(PRESSED), LV_OPA_COVER);
     d_text(F17, K_INK, LV_OPA_COVER, 240, top + 50, 1, title);
     bool sw = s_sheet == Z_SWV || s_sheet == Z_SWH;
     int bw = (456 - (per - 1) * gap) / per;
@@ -878,7 +887,7 @@ static void d_sheet(const pad_t *p)
         int x = 12 + c * (bw + gap), y = top + 70 + r * (bh + gap);
         bool on = !strcmp(o[i].v, now);
         uint32_t acc = s_sheet == Z_CHIP || s_sheet == Z_MODEBTN ? tone_color(o[i].tone) : K_ACTIVE;
-        uint32_t bg = on ? acc : pressed(Z_OPT, i) ? 0x3A3B40 : K_BG;
+        uint32_t bg = on ? acc : pressed(Z_OPT, i) ? K_PRESS : K_BG;
         uint32_t ink = on ? K_ACT_INK : K_INK;
         d_rect(x, y, bw, bh, 16, bg, LV_OPA_COVER);
         zone(x, y, x + bw, y + bh, Z_OPT, i);
@@ -990,7 +999,7 @@ static void draw_ac(pad_t *p)
         const char *word = m ? m->word : "режим";
         int tw = text_w(F13, word), cw = 10 + 17 + 5 + tw + 12;
         int x = 240 - cw / 2;
-        d_rect(x, 51, cw, 35, 17, pressed(Z_CHIP, 0) ? 0x34353A : K_CHIP, LV_OPA_COVER);
+        d_rect(x, 51, cw, 35, 17, pressed(Z_CHIP, 0) ? K_PRESS : K_CHIP, LV_OPA_COVER);
         d_icon(icon_path(m ? m->icon : "power"), x + 10 + 8.6f, 68.5f, 17.3f, 1.8f, col, LV_OPA_COVER);
         d_text(F13, col, LV_OPA_COVER, x + 32, 76.8f, 0, word);
         zone(x - 10, 40, x + cw + 10, 96, Z_CHIP, 0);
@@ -1010,7 +1019,7 @@ static void draw_ac(pad_t *p)
     for (int k = 0; k < nb; k++) {
         int i = ids[k];
         float x = 240 + (k - (nb - 1) / 2.0f) * 91.2f, y = 377.6f;
-        d_circle(x, y, 27.2f, pressed(btn[i].z, 0) ? 0x3A3B40 : K_PILL, LV_OPA_COVER);
+        d_circle(x, y, 27.2f, pressed(btn[i].z, 0) ? K_PRESS : K_PILL, LV_OPA_COVER);
         zone((int)x - 44, 334, (int)x + 44, 470, btn[i].z, 0);
         char val[32];
         if (i == 0) {
@@ -1075,16 +1084,16 @@ static void draw_dial(pad_t *p)
         float a = d_ang(p, t), x1, y1, x2, y2;
         dpt(105.8f, a, &x1, &y1);
         dpt(mj ? 115.3f : 111.1f, a, &x2, &y2);
-        d_line(x1, y1, x2, y2, (mj ? 2 : 1.2f) * DK, 0xFFFFFF, mj ? 204 : 102);
+        d_line(x1, y1, x2, y2, (mj ? 2 : 1.2f) * DK, K_SCALE, mj ? 204 : 102);
         if (mj) {
             float lx, ly;
             dpt(129, a, &lx, &ly);
             snprintf(b, sizeof(b), "%d", t);
-            d_text(big ? F13 : F12, 0xFFFFFF, 140, lx, ly + 4 * DK, 1, b);
+            d_text(big ? F13 : F12, K_SCALE, 140, lx, ly + 4 * DK, 1, b);
         }
     }
     float at = p->has_target ? d_ang(p, p->v_target) : D_A0;
-    d_arc(D_CX, DCY, D_R, 7.45f * DK, D_A0, D_A0 + D_SW, 0xFFFFFF, 36);
+    d_arc(D_CX, DCY, D_R, 7.45f * DK, D_A0, D_A0 + D_SW, K_SCALE, 36);
     if (p->has_target) d_arc(D_CX, DCY, D_R, 7.45f * DK, D_A0, at, fill, on ? LV_OPA_COVER : 140);
     if (p->has_current) {
         float a = d_ang(p, p->v_current), x1, y1, x2, y2;
@@ -1100,12 +1109,12 @@ static void draw_dial(pad_t *p)
         d_circle(x, y, 5 * DK, 0xFFFFFF, LV_OPA_COVER);
     }
     // ребристая ручка
-    d_circle(D_CX, DCY + 5 * DK, 80 * DK, 0x000000, 70);
+    d_circle(D_CX, DCY + 5 * DK, 80 * DK, TH(SHADOW), 70);
     for (int i = 0; i < 48; i++) {
         float a = i * 7.5f, x1, y1, x2, y2;
         dpt(66, a, &x1, &y1);
         dpt(72, a, &x2, &y2);
-        d_line(x1, y1, x2, y2, 5 * DK, 0x3C3D42, LV_OPA_COVER);
+        d_line(x1, y1, x2, y2, 5 * DK, mixc(K_BTN, 0xFFFFFF, 0.04f), LV_OPA_COVER);
     }
     lv_draw_rect_dsc_t kd;
     lv_draw_rect_dsc_init(&kd);
@@ -1113,10 +1122,10 @@ static void draw_dial(pad_t *p)
     kd.bg_opa = LV_OPA_COVER;
     kd.bg_grad.dir = LV_GRAD_DIR_VER;
     kd.bg_grad.stops_count = 2;
-    kd.bg_grad.stops[0].color = lv_color_hex(0x46474C);
+    kd.bg_grad.stops[0].color = lv_color_hex(mixc(K_BTN, 0xFFFFFF, 0.08f));
     kd.bg_grad.stops[0].opa = LV_OPA_COVER;
     kd.bg_grad.stops[0].frac = 0;
-    kd.bg_grad.stops[1].color = lv_color_hex(0x2A2B2F);
+    kd.bg_grad.stops[1].color = lv_color_hex(mixc(K_BTN, 0x000000, 0.2f));
     kd.bg_grad.stops[1].opa = LV_OPA_COVER;
     kd.bg_grad.stops[1].frac = 255;
     int kr = (int)lroundf(67 * DK);
@@ -1141,7 +1150,7 @@ static void draw_dial(pad_t *p)
         float x = D_CX + (k ? 72 : -72) * DK, y = DCY + 87 * DK;
         int z = k ? Z_PLUS : Z_MINUS;
         float r = 24 * DK, g = 8 * DK;
-        d_circle(x, y, r, pressed(z, 0) ? 0x55565C : 0x3A3B40, LV_OPA_COVER);
+        d_circle(x, y, r, pressed(z, 0) ? TH(PRESSED) : K_PRESS, LV_OPA_COVER);
         d_line(x - g, y, x + g, y, 3 * DK, K_INK, LV_OPA_COVER);
         if (k) d_line(x, y - g, x, y + g, 3 * DK, K_INK, LV_OPA_COVER);
         zone((int)(x - r - 12), (int)(y - r - 12), (int)(x + r + 12), (int)(y + r + 12), z, 0);
@@ -1165,7 +1174,7 @@ static void draw_dial(pad_t *p)
         if ((i == 0 && !p->nmodes) || (i == 1 && !p->nfans)) continue;
         float x = 240 + (k - (nb - 1) / 2.0f) * 110, y = 410;
         int z = i == 0 ? Z_MODEBTN : Z_FAN;
-        d_circle(x, y, 24, pressed(z, 0) ? 0x3A3B40 : K_PILL, LV_OPA_COVER);
+        d_circle(x, y, 24, pressed(z, 0) ? K_PRESS : K_PILL, LV_OPA_COVER);
         zone((int)x - 50, 380, (int)x + 50, 479, z, 0);
         char val[32] = "—";
         if (i == 0) {
@@ -1221,9 +1230,9 @@ static void d_window(const pad_t *p, int X, int Y, int W, int H, int rad, int fr
             d_rect(X, Y, W, fh, 0, K_DRAPE, LV_OPA_COVER);
             for (int y = 0; y < fh; y += fold) {
                 int h = fh - y < fold ? fh - y : fold;
-                d_vgrad(X, Y + y, W, h, 0, 0xFFFFFF, 26, 0x000000, 82);
+                d_vgrad(X, Y + y, W, h, 0, 0xFFFFFF, 26, TH(FABRIC_SHADOW), 82);
             }
-            d_rect(X, Y + fh - (int)(4 * s), W, (int)(4 * s) + 1, 0, 0x000000, 56);
+            d_rect(X, Y + fh - (int)(4 * s), W, (int)(4 * s) + 1, 0, TH(FABRIC_SHADOW), 56);
             d_rect(X + W / 2 - (int)(26 * s), Y + fh - (int)(4 * s), (int)(52 * s), (int)(6 * s) + 1, 3, K_ACTIVE, LV_OPA_COVER);
         } else {
             // раздвижная: створки от краёв, вертикальные складки
@@ -1235,7 +1244,7 @@ static void d_window(const pad_t *p, int X, int Y, int W, int H, int rad, int fr
                 d_rect(x0, Y, pw, H, 0, K_DRAPE, LV_OPA_COVER);
                 for (int x = 0; x < pw; x += fold) {
                     int w = pw - x < fold ? pw - x : fold;
-                    d_rect(x0 + x, Y, w / 2, H, 0, 0x000000, 40);
+                    d_rect(x0 + x, Y, w / 2, H, 0, TH(FABRIC_SHADOW), 40);
                     d_rect(x0 + x + w / 2, Y, w - w / 2, H, 0, 0xFFFFFF, 14);
                 }
             }
@@ -1255,7 +1264,7 @@ static void draw_cover(pad_t *p)
 
     d_window(p, SC_X, SC_Y, SC_W, SC_H, 18, 14, K_BG2);
     float open = shown_pos(p) / 100.0f;
-    d_border(SC_X, SC_Y, SC_W, SC_H, 18, 2, open > 0.01f ? K_ACTIVE : 0x3A3B40, LV_OPA_COVER);
+    d_border(SC_X, SC_Y, SC_W, SC_H, 18, 2, open > 0.01f ? K_ACTIVE : TH(TRACK), LV_OPA_COVER);
     zone(SC_X - 20, SC_Y - 20, SC_X + SC_W + 20, SC_Y + SC_H + 20, Z_SCENE, 0);
 
     char b[48];
@@ -1277,8 +1286,8 @@ static void draw_cover(pad_t *p)
     int x = 240 - total / 2;
     for (int k = 0; k < n; k++) {
         int i = idx[k];
-        d_rect(x, 418, w[i], 48, 16, pressed(zid[i], 0) ? 0x2E2F34 : K_BG2, LV_OPA_COVER);
-        d_border(x, 418, w[i], 48, 16, 2, 0x4A4B50, LV_OPA_COVER);
+        d_rect(x, 418, w[i], 48, 16, pressed(zid[i], 0) ? TH(SURFACE) : K_BG2, LV_OPA_COVER);
+        d_border(x, 418, w[i], 48, 16, 2, TH(PRESSED), LV_OPA_COVER);
         d_text(F17, K_INK, LV_OPA_COVER, x + w[i] / 2, 448, 1, t[i]);
         zone(x - 4, 408, x + w[i] + 4, 479, zid[i], 0);
         x += w[i] + 12;
@@ -1307,11 +1316,11 @@ static void light_ball(float cx, float cy, float r, uint32_t tint, bool on, floa
         float k = i / 12.0f, rr = r * (1 - k * 0.80f);
         uint32_t base = on ? mixc(0x2A2B2F, tint, 0.60f + 0.40f * lvl)
                            : mixc(0x2A2B2F, tint, 0.45f);
-        uint32_t col = mixc(base, on ? 0xFFFFFF : 0x8E8E90, k * k * (on ? 0.45f : 0.22f));
+        uint32_t col = mixc(base, on ? 0xFFFFFF : K_DIM, k * k * (on ? 0.45f : 0.22f));
         d_circle(cx - r * 0.26f * k, cy - r * 0.30f * k, rr, col, LV_OPA_COVER);
     }
     d_border((int)(cx - r), (int)(cy - r), (int)(2 * r) + 1, (int)(2 * r) + 1,
-             LV_RADIUS_CIRCLE, 2, on ? tint : 0x3A3B40, LV_OPA_COVER);
+             LV_RADIUS_CIRCLE, 2, on ? tint : TH(TRACK), LV_OPA_COVER);
 }
 
 static float light_warm_q(const pad_t *p)
@@ -1339,10 +1348,10 @@ static void draw_light(pad_t *p)
     // шкала яркости слева: дуга и бегунок
     d_arc(LT_CX, LT_CY, LT_AR, 6, 165, 255, K_PILL, LV_OPA_COVER);
     if (lvl > 0.005f)
-        d_arc(LT_CX, LT_CY, LT_AR, 6, 165, 165 + 90 * lvl, on ? K_ACTIVE : 0x8E8E90, LV_OPA_COVER);
+        d_arc(LT_CX, LT_CY, LT_AR, 6, 165, 165 + 90 * lvl, on ? K_ACTIVE : K_DIM, LV_OPA_COVER);
     float a = (165 + 90 * lvl) * (float)M_PI / 180;
     d_circle(LT_CX + (LT_AR + 2) * cosf(a), LT_CY + (LT_AR + 2) * sinf(a), 7,
-             on ? K_INK : 0x8E8E90, LV_OPA_COVER);
+             on ? K_INK : K_DIM, LV_OPA_COVER);
 
     // теплота снизу: цветные точки от холодного к тёплому и бегунок
     if (p->temp_cmd) {
@@ -1355,7 +1364,7 @@ static void draw_light(pad_t *p)
         }
         float ad = (140 - 100 * warm) * (float)M_PI / 180;
         d_circle(LT_CX + (LT_AR + 2) * cosf(ad), LT_CY + (LT_AR + 2) * sinf(ad), 7,
-                 on ? K_INK : 0x8E8E90, LV_OPA_COVER);
+                 on ? K_INK : K_DIM, LV_OPA_COVER);
     }
 
     // На шаре чисел нет: значения читаются в строке под шаром, а цвет шара
@@ -1366,14 +1375,14 @@ static void draw_light(pad_t *p)
     struct { float deg; int z; const char *txt; const char *icon; uint32_t col; } btns[] = {
         {270, Z_PLUS, "+", NULL, K_INK},
         {90, Z_MINUS, "−", NULL, K_INK},
-        {150, Z_TPLUS, NULL, IC_SNOW, 0x56AAFF},
-        {30, Z_TMINUS, NULL, IC_HEAT, 0xFF9337},
+        {150, Z_TPLUS, NULL, IC_SNOW, TH(CCT_COLD)},
+        {30, Z_TMINUS, NULL, IC_HEAT, TH(CCT_WARM)},
     };
     for (size_t i = 0; i < sizeof(btns) / sizeof(btns[0]); i++) {
         if ((btns[i].z == Z_TPLUS || btns[i].z == Z_TMINUS) && !p->temp_cmd) continue;
         float ad = btns[i].deg * (float)M_PI / 180;
         float x = LT_CX + LT_BR * cosf(ad), y = LT_CY + LT_BR * sinf(ad);
-        d_circle(x, y, 25, pressed(btns[i].z, 0) ? 0x55565C : K_PILL, LV_OPA_COVER);
+        d_circle(x, y, 25, pressed(btns[i].z, 0) ? TH(PRESSED) : K_PILL, LV_OPA_COVER);
         if (btns[i].icon) d_icon(btns[i].icon, x, y, 23, 2.2f, btns[i].col, LV_OPA_COVER);
         else d_text(F22S, btns[i].col, LV_OPA_COVER, x, y + 8, 1, btns[i].txt);
         zone((int)x - 36, (int)y - 36, (int)x + 36, (int)y + 36, btns[i].z, 0);
@@ -1397,8 +1406,8 @@ static void draw_light(pad_t *p)
 // ---- телевизор (с 0.11)
 static void tv_btn(int x, int y, int r, int key, const char *icon, const char *txt)
 {
-    d_circle(x, y + 2, r, 0x000000, 70);
-    d_circle(x, y, r, pressed(Z_KEY, key) ? 0x4A4B50 : 0x35363B, LV_OPA_COVER);
+    d_circle(x, y + 2, r, TH(SHADOW), 70);
+    d_circle(x, y, r, pressed(Z_KEY, key) ? TH(PRESSED) : K_BTN, LV_OPA_COVER);
     d_border(x - r, y - r, 2 * r, 2 * r, LV_RADIUS_CIRCLE, 1, 0xFFFFFF, 18);
     if (icon) d_icon(icon, x, y, r * 1.15f, 2.4f, K_INK, LV_OPA_COVER);
     else if (txt) d_text(F22S, K_INK, LV_OPA_COVER, x, y + 8, 1, txt);
@@ -1427,14 +1436,14 @@ static void tv_triangle(float cx, float cy, int key, float size)
 // Зубчатое колесо WB: тёмные радиальные зубья, серый диск, оранжевая OK.
 static void tv_wheel(int cx, int cy, int r)
 {
-    d_circle(cx, cy + 3, r + 5, 0x000000, 80);
+    d_circle(cx, cy + 3, r + 5, TH(SHADOW), 80);
     for (int i = 0; i < 28; i++) {
         float a = 2.0f * (float)M_PI * i / 28.0f;
         float ca = cosf(a), sa = sinf(a);
         d_line(cx + ca * (r - 3), cy + sa * (r - 3),
                cx + ca * (r + 4), cy + sa * (r + 4), 5, K_BG2, LV_OPA_COVER);
     }
-    d_circle(cx, cy, r - 2, 0x3A3B40, LV_OPA_COVER);
+    d_circle(cx, cy, r - 2, TH(TRACK), LV_OPA_COVER);
     d_border(cx - r + 3, cy - r + 3, 2 * (r - 3), 2 * (r - 3),
              LV_RADIUS_CIRCLE, 1, 0xFFFFFF, 22);
     d_arc(cx, cy, r - 6, 2, 195, 335, 0xFFFFFF, 24);
@@ -1449,8 +1458,8 @@ static void tv_wheel(int cx, int cy, int r)
     zone(cx - r - 5, cy - 35, cx - 39, cy + 35, Z_KEY, TK_LEFT);
     zone(cx + 39, cy - 35, cx + r + 5, cy + 35, Z_KEY, TK_RIGHT);
 
-    d_circle(cx, cy + 3, 36, 0x000000, 75);
-    d_circle(cx, cy, 32, pressed(Z_KEY, TK_OK) ? 0xD88C2C : K_ACTIVE, LV_OPA_COVER);
+    d_circle(cx, cy + 3, 36, TH(SHADOW), 75);
+    d_circle(cx, cy, 32, pressed(Z_KEY, TK_OK) ? mixc(K_ACTIVE, 0x000000, 0.12f) : K_ACTIVE, LV_OPA_COVER);
     d_text(F22S, K_ACT_INK, LV_OPA_COVER, cx, cy + 8, 1, "OK");
     zone(cx - 36, cy - 36, cx + 36, cy + 36, Z_KEY, TK_OK);
 }
@@ -1481,7 +1490,7 @@ static void draw_tv(pad_t *p)
             int y = top + i * slot;
             const char *title = p->apps[i].title ? p->apps[i].title : "";
             bool now = p->app_now[0] && !strcmp(p->app_now, title);
-            uint32_t bg = now ? K_ACTIVE : pressed(Z_APP, i) ? 0x3A3B40 : K_CHIP;
+            uint32_t bg = now ? K_ACTIVE : pressed(Z_APP, i) ? K_PRESS : K_CHIP;
             d_rect(x, y, w, bh, bh / 2, bg, LV_OPA_COVER);
             zone(x, y - 2, x + w, y + bh + 2, Z_APP, i);
             d_text_ellipsize(F12, now ? K_ACT_INK : K_INK,
@@ -1515,8 +1524,8 @@ static void draw_tv(pad_t *p)
 }
 
 // ---- протечки (с 0.11): датчики строками, тревога и сброс
-#define LEAK_RED 0xD84E4A
-#define LEAK_GREEN 0x4E9A6B
+#define LEAK_RED TH(ALARM)
+#define LEAK_GREEN TH(OK)
 
 static void draw_leak(pad_t *p)
 {
@@ -1541,7 +1550,7 @@ static void draw_leak(pad_t *p)
     for (int i = 0; i < shown; i++) {
         bool w = p->sensors[i].wet;
         d_circle(46, y + 16, 7, w ? LEAK_RED : LEAK_GREEN, LV_OPA_COVER);
-        d_text(F17, w ? K_INK : 0xC8CACF, LV_OPA_COVER, 66, y + 22, 0,
+        d_text(F17, w ? K_INK : mixc(K_DIM, K_INK, 0.6f), LV_OPA_COVER, 66, y + 22, 0,
                p->sensors[i].title ? p->sensors[i].title : "");
         d_text(F13, w ? LEAK_RED : K_DIM, LV_OPA_COVER, 436, y + 21, 2, w ? "вода" : "сухо");
         y += 42;
@@ -1555,7 +1564,7 @@ static void draw_leak(pad_t *p)
         const char *t = "Сбросить защиту";
         int w = text_w(F17, t) + 56;
         int x = 240 - w / 2;
-        d_rect(x, 416, w, 48, 16, pressed(Z_RESET, 0) ? 0x8A3532 : LEAK_RED, LV_OPA_COVER);
+        d_rect(x, 416, w, 48, 16, pressed(Z_RESET, 0) ? mixc(LEAK_RED, 0x000000, 0.35f) : LEAK_RED, LV_OPA_COVER);
         d_text(F17, K_INK, LV_OPA_COVER, 240, 446, 1, t);
         zone(x - 4, 410, x + w + 4, 470, Z_RESET, 0);
     }
@@ -1673,7 +1682,7 @@ static bool forecast_graph(const pad_t *p, float X0, float X1, float Y0, float Y
                 int tw = text_w(font, b), lh = font->line_height;
                 d_rect((int)(tx - tw / 2.0f - 3 * scale), (int)(ty - lh * 0.82f),
                        tw + (int)(6 * scale), (int)(lh * 1.05f), (int)(3 * scale),
-                       0x141519, 200);
+                       mixc(K_BG, 0x000000, 0.3f), 200);
             }
             d_text(font, 0x3B8FD4, LV_OPA_COVER, tx, ty, 1, b);
         }
@@ -2203,8 +2212,8 @@ pad_t *pad_parse(const cJSON *tile, const char *title)
         if (p->temp_max <= p->temp_min) p->temp_max = p->temp_min + 1;
         p->temp_unit = js(o, "unit");
         // Умолчания - как у панели (pads-light.js): иначе переход бледный.
-        p->cold = hexcol(jsv(o, "cold"), 0x56AAFF);
-        p->warm = hexcol(jsv(o, "warm"), 0xFF9337);
+        p->cold = hexcol(jsv(o, "cold"), 0);
+        p->warm = hexcol(jsv(o, "warm"), 0);
         if (!p->level || !p->level_cmd) goto bad;
     } else if (!strcmp(k->valuestring, "tv")) {
         // Телевизор (с 0.11): клавиши - <base><имя>/on, питание - <base>power/on.
@@ -2513,14 +2522,14 @@ static void tile_dial(const pad_t *p, int x, int y, int w, int h)
         bool mj = lstep > 0 && (t - (int)ceilf(p->min)) % lstep == 0;
         float r1 = R + PS(6), r2 = R + PS(mj ? 11 : 9);
         d_line(cx + r1 * ca, cy + r1 * sa, cx + r2 * ca, cy + r2 * sa,
-               (mj ? 1.4f : 1) * s_tile_scale, 0xFFFFFF, mj ? 204 : 90);
+               (mj ? 1.4f : 1) * s_tile_scale, K_SCALE, mj ? 204 : 90);
         if (mj && w >= PS(140)) {
             snprintf(b, sizeof(b), "%d", t);
-            d_text(P_F12, 0xFFFFFF, 120, cx + (R + PS(21)) * ca,
+            d_text(P_F12, K_SCALE, 120, cx + (R + PS(21)) * ca,
                    cy + (R + PS(21)) * sa + PS(4), 1, b);
         }
     }
-    d_arc(cx, cy, R, 4 * s_tile_scale, D_A0, D_A0 + D_SW, 0xFFFFFF, 36);
+    d_arc(cx, cy, R, 4 * s_tile_scale, D_A0, D_A0 + D_SW, K_SCALE, 36);
     if (p->has_target) {
         d_arc(cx, cy, R, 4 * s_tile_scale, D_A0, ang, fill, on ? LV_OPA_COVER : 140);
         float a = ang * (float)M_PI / 180;
@@ -2534,10 +2543,10 @@ static void tile_dial(const pad_t *p, int x, int y, int w, int h)
     kd.bg_opa = LV_OPA_COVER;
     kd.bg_grad.dir = LV_GRAD_DIR_VER;
     kd.bg_grad.stops_count = 2;
-    kd.bg_grad.stops[0].color = lv_color_hex(0x46474C);
+    kd.bg_grad.stops[0].color = lv_color_hex(mixc(K_BTN, 0xFFFFFF, 0.08f));
     kd.bg_grad.stops[0].opa = LV_OPA_COVER;
     kd.bg_grad.stops[0].frac = 0;
-    kd.bg_grad.stops[1].color = lv_color_hex(0x2A2B2F);
+    kd.bg_grad.stops[1].color = lv_color_hex(mixc(K_BTN, 0x000000, 0.2f));
     kd.bg_grad.stops[1].opa = LV_OPA_COVER;
     kd.bg_grad.stops[1].frac = 255;
     int kr = (int)lroundf(R * 0.72f);
@@ -2545,7 +2554,7 @@ static void tile_dial(const pad_t *p, int x, int y, int w, int h)
         float a = i * 10 * (float)M_PI / 180;
         d_line(cx + (kr + PL(1)) * cosf(a), cy + (kr + PL(1)) * sinf(a),
                cx + (kr + PS(4)) * cosf(a), cy + (kr + PS(4)) * sinf(a),
-               2.2f * s_tile_scale, 0x3C3D42, LV_OPA_COVER);
+               2.2f * s_tile_scale, mixc(K_BTN, 0xFFFFFF, 0.04f), LV_OPA_COVER);
     }
     lv_area_t ka = {(int)cx - kr, (int)cy - kr, (int)cx + kr, (int)cy + kr};
     lv_draw_rect(L, &kd, &ka);
@@ -2574,13 +2583,13 @@ static void tile_cover(const pad_t *p, int x, int y, int w, int h, uint32_t page
     d_window(p, x, y, w, h, PS(14), PL(14), page_bg);
     float open = shown_pos(p) / 100.0f;
     d_border(x, y, w, h, PS(14), open > 0.01f ? PL(2) : PL(1),
-             open > 0.01f ? K_ACTIVE : 0x303135, LV_OPA_COVER);
+             open > 0.01f ? K_ACTIVE : TH(TILE_BORDER), LV_OPA_COVER);
     char b[48];
     bool square = h >= PS(100);
     d_text(P_F14, K_INK, LV_OPA_COVER, x + PS(12), y + h - PS(square ? 30 : 26), 0, p->title ? p->title : "");
     if (p->has_pos) snprintf(b, sizeof(b), "Открыто %d%%", (int)lroundf(shown_pos(p)));
     else snprintf(b, sizeof(b), "Нет данных");
-    d_text(P_F12, 0xC8CACF, LV_OPA_COVER, x + PS(12), y + h - PS(square ? 11 : 8), 0, b);
+    d_text(P_F12, mixc(K_DIM, K_INK, 0.6f), LV_OPA_COVER, x + PS(12), y + h - PS(square ? 11 : 8), 0, b);
 }
 
 // Телевизор на плитке: значок, статус, приложение (с 0.11).
@@ -3050,7 +3059,7 @@ void pad_open(pad_t *p)
     s_prev = lv_screen_active();
     s_root = lv_obj_create(NULL);
     lv_obj_remove_style_all(s_root);
-    lv_obj_set_style_bg_color(s_root, lv_color_hex(K_BG2), 0);
+    th_bind(s_root, LV_STYLE_BG_COLOR, 0, TH_PAD_BG);
     lv_obj_set_style_bg_opa(s_root, LV_OPA_COVER, 0);
     lv_obj_add_flag(s_root, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_add_flag(s_root, LV_OBJ_FLAG_PRESS_LOCK);

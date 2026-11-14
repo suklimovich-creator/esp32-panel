@@ -51,21 +51,22 @@ lv_obj_t *ui_label(lv_obj_t *parent, const lv_font_t *font, uint32_t color, cons
 static lv_obj_t *screen(void)
 {
     lv_obj_t *s = lv_obj_create(NULL);
-    lv_obj_set_style_bg_color(s, lv_color_hex(C_BG), 0);
+    th_bind(s, LV_STYLE_BG_COLOR, 0, TH_PANEL_BG);
     lv_obj_set_style_bg_opa(s, LV_OPA_COVER, 0);
     lv_obj_remove_flag(s, LV_OBJ_FLAG_SCROLLABLE);
     return s;
 }
 
-static lv_obj_t *button(lv_obj_t *parent, const char *text, uint32_t bg, uint32_t fg, lv_event_cb_t cb)
+// Цвета - роли палитры; -1 - цвет задаст вызывающий (сигнальные кнопки).
+static lv_obj_t *button(lv_obj_t *parent, const char *text, int bg, int fg, lv_event_cb_t cb)
 {
     lv_obj_t *b = lv_button_create(parent);
-    lv_obj_set_style_bg_color(b, lv_color_hex(bg), 0);
+    if (bg >= 0) th_bind(b, LV_STYLE_BG_COLOR, 0, bg);
     lv_obj_set_style_radius(b, 14, 0);
     lv_obj_set_style_shadow_width(b, 0, 0);
     lv_obj_set_style_pad_ver(b, 14, 0);
     lv_obj_set_style_pad_hor(b, 18, 0);
-    lv_obj_t *l = ui_label(b, f18, fg, text);
+    lv_obj_t *l = fg >= 0 ? th_label(b, f18, fg, text) : ui_label(b, f18, 0xFFFFFF, text);
     lv_obj_center(l);
     if (cb) lv_obj_add_event_cb(b, cb, LV_EVENT_CLICKED, NULL);
     return b;
@@ -110,17 +111,17 @@ static void build_main(void)
     lv_obj_t *gear = lv_button_create(scr_main);
     lv_obj_set_size(gear, 36, 36);
     lv_obj_align(gear, LV_ALIGN_TOP_RIGHT, -10, 10);
-    lv_obj_set_style_bg_color(gear, lv_color_hex(C_CARD), 0);
+    th_bind(gear, LV_STYLE_BG_COLOR, 0, TH_PANEL_SURFACE);
     lv_obj_set_style_radius(gear, LV_RADIUS_CIRCLE, 0);
     lv_obj_set_style_shadow_width(gear, 0, 0);
     lv_obj_set_ext_click_area(gear, 12);
-    lv_obj_t *gl = ui_label(gear, &lv_font_montserrat_14, C_DIM, LV_SYMBOL_SETTINGS);
+    lv_obj_t *gl = th_label(gear, &lv_font_montserrat_14, TH_TEXT_DIM, LV_SYMBOL_SETTINGS);
     lv_obj_center(gl);
     lv_obj_add_event_cb(gear, open_device, LV_EVENT_CLICKED, NULL);
 
-    lbl_wifi = ui_label(scr_main, &lv_font_montserrat_14, C_DIM, LV_SYMBOL_WIFI);
+    lbl_wifi = th_label(scr_main, &lv_font_montserrat_14, TH_TEXT_DIM, LV_SYMBOL_WIFI);
     lv_obj_align(lbl_wifi, LV_ALIGN_TOP_RIGHT, -56, 20);
-    lbl_clock = ui_label(scr_main, f22, C_TEXT, "--:--");
+    lbl_clock = th_label(scr_main, f22, TH_TEXT, "--:--");
     lv_obj_align(lbl_clock, LV_ALIGN_TOP_RIGHT, -78, 15);
 
     lv_obj_t *content = lv_obj_create(scr_main);
@@ -173,13 +174,13 @@ static void do_forget(lv_event_t *e)
     lv_obj_t *card = lv_obj_create(mb);
     lv_obj_set_size(card, 400, LV_SIZE_CONTENT);
     lv_obj_center(card);
-    lv_obj_set_style_bg_color(card, lv_color_hex(C_CARD), 0);
-    lv_obj_set_style_border_color(card, lv_color_hex(C_LINE), 0);
+    th_bind(card, LV_STYLE_BG_COLOR, 0, TH_PANEL_SURFACE);
+    th_bind(card, LV_STYLE_BORDER_COLOR, 0, TH_PANEL_LINE);
     lv_obj_set_style_radius(card, 18, 0);
     lv_obj_set_style_pad_all(card, 22, 0);
     lv_obj_set_flex_flow(card, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_style_pad_row(card, 14, 0);
-    lv_obj_t *t = ui_label(card, f18, C_TEXT, "Забыть сеть Wi-Fi?\nЭкран перезагрузится и включит точку доступа для настройки.");
+    lv_obj_t *t = th_label(card, f18, TH_TEXT, "Забыть сеть Wi-Fi?\nЭкран перезагрузится и включит точку доступа для настройки.");
     lv_obj_set_width(t, LV_PCT(100));
     lv_label_set_long_mode(t, LV_LABEL_LONG_WRAP);
     lv_obj_t *row = lv_obj_create(card);
@@ -190,9 +191,10 @@ static void do_forget(lv_event_t *e)
     lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
     lv_obj_set_flex_align(row, LV_FLEX_ALIGN_END, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
     lv_obj_set_style_pad_column(row, 10, 0);
-    button(row, "Отмена", C_LINE, C_TEXT, NULL);
+    button(row, "Отмена", TH_PANEL_LINE, TH_TEXT, NULL);
     lv_obj_add_event_cb(lv_obj_get_child(row, 0), close_box, LV_EVENT_CLICKED, NULL);
-    button(row, "Забыть", C_BAD, 0xFFFFFF, forget_confirmed);
+    lv_obj_t *forget = button(row, "Забыть", -1, -1, forget_confirmed);
+    lv_obj_set_style_bg_color(forget, lv_color_hex(C_BAD), 0);
 }
 
 static void bright_changed(lv_event_t *e)
@@ -221,29 +223,29 @@ static void build_device(void)
     lv_obj_set_style_border_width(top, 0, 0);
     lv_obj_set_style_pad_all(top, 0, 0);
     lv_obj_remove_flag(top, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_t *back = button(top, "←  Назад", C_CARD, C_TEXT, back_main);
+    lv_obj_t *back = button(top, "←  Назад", TH_PANEL_SURFACE, TH_TEXT, back_main);
     lv_obj_set_style_pad_ver(back, 10, 0);
     lv_obj_set_ext_click_area(back, 12);
     lv_obj_align(back, LV_ALIGN_LEFT_MID, 0, 0);
-    lv_obj_t *title = ui_label(top, f22, C_TEXT, "Устройство");
+    lv_obj_t *title = th_label(top, f22, TH_TEXT, "Устройство");
     lv_obj_align(title, LV_ALIGN_RIGHT_MID, -6, 0);
 
-    lbl_dev_info = ui_label(scr_dev, f14, C_DIM, "");
+    lbl_dev_info = th_label(scr_dev, f14, TH_TEXT_DIM, "");
     lv_obj_set_width(lbl_dev_info, LV_PCT(100));
     lv_obj_set_style_text_line_space(lbl_dev_info, 3, 0);
     lv_label_set_long_mode(lbl_dev_info, LV_LABEL_LONG_WRAP);
 
-    lbl_bright = ui_label(scr_dev, f14, C_DIM, "Яркость");
+    lbl_bright = th_label(scr_dev, f14, TH_TEXT_DIM, "Яркость");
     lv_obj_t *bs = lv_slider_create(scr_dev);
     lv_obj_set_size(bs, LV_PCT(100), 28);
     lv_slider_set_range(bs, 5, 100);
     lv_slider_set_value(bs, g_cfg.bright, LV_ANIM_OFF);
     lv_label_set_text_fmt(lbl_bright, "Яркость  %d%%", g_cfg.bright);
     lv_obj_set_style_radius(bs, 14, LV_PART_MAIN);
-    lv_obj_set_style_bg_color(bs, lv_color_hex(C_CARD), LV_PART_MAIN);
+    th_bind(bs, LV_STYLE_BG_COLOR, LV_PART_MAIN, TH_PANEL_SURFACE);
     lv_obj_set_style_bg_opa(bs, LV_OPA_COVER, LV_PART_MAIN);
     lv_obj_set_style_radius(bs, 14, LV_PART_INDICATOR);
-    lv_obj_set_style_bg_color(bs, lv_color_hex(0xDADDE5), LV_PART_INDICATOR);
+    th_bind(bs, LV_STYLE_BG_COLOR, LV_PART_INDICATOR, TH_TEXT);
     lv_obj_set_style_bg_opa(bs, LV_OPA_TRANSP, LV_PART_KNOB);
     lv_obj_set_style_shadow_width(bs, 0, LV_PART_KNOB);
     lv_obj_add_event_cb(bs, bright_changed, LV_EVENT_VALUE_CHANGED, NULL);
@@ -258,10 +260,11 @@ static void build_device(void)
     lv_obj_set_flex_flow(grid, LV_FLEX_FLOW_ROW_WRAP);
     lv_obj_remove_flag(grid, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_t *b;
-    b = button(grid, "Обновление", C_CARD, C_TEXT, do_check);           lv_obj_set_width(b, 222);
-    b = button(grid, "Настройка Wi-Fi", C_CARD, C_TEXT, do_setup);      lv_obj_set_width(b, 222);
-    b = button(grid, "Перезагрузить", C_CARD, C_TEXT, do_reboot);       lv_obj_set_width(b, 222);
-    b = button(grid, "Забыть Wi-Fi", C_CARD, C_BAD, do_forget);         lv_obj_set_width(b, 222);
+    b = button(grid, "Обновление", TH_PANEL_SURFACE, TH_TEXT, do_check);           lv_obj_set_width(b, 222);
+    b = button(grid, "Настройка Wi-Fi", TH_PANEL_SURFACE, TH_TEXT, do_setup);      lv_obj_set_width(b, 222);
+    b = button(grid, "Перезагрузить", TH_PANEL_SURFACE, TH_TEXT, do_reboot);       lv_obj_set_width(b, 222);
+    b = button(grid, "Забыть Wi-Fi", TH_PANEL_SURFACE, -1, do_forget);
+    lv_obj_set_style_text_color(lv_obj_get_child(b, 0), lv_color_hex(C_BAD), 0);         lv_obj_set_width(b, 222);
 }
 
 static void fill_device(const net_status_t *ns)
@@ -283,11 +286,11 @@ static void fill_device(const net_status_t *ns)
     }
     lv_label_set_text_fmt(lbl_dev_info,
         "%s  ·  версия %s\nWi-Fi:  %s\nОбрывы:  %s\nMQTT:  %s  ·  точка доступа: %s\n"
-        "Раскладка:  %s, плиток %d; сервер: %s\nПамять:  %u КБ, минимум %u КБ\nОбновление:  %s",
+        "Раскладка:  %s, плиток %d; сервер: %s\nТема:  %s\nПамять:  %u КБ, минимум %u КБ\nОбновление:  %s",
         g_cfg.name, ver, wifi, drops,
         mq_connected() ? "подключён" : "нет связи",
         ns->ap_active ? ns->ap_ssid : "выкл.",
-        layout_src_name(layout_shown()), tiles_count(), layout_sync_text(),
+        layout_src_name(layout_shown()), tiles_count(), layout_sync_text(), theme_sync_text(),
         (unsigned)(heap_caps_get_free_size(MALLOC_CAP_INTERNAL) / 1024),
         (unsigned)(heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL) / 1024),
         ota_state_text());
@@ -298,10 +301,10 @@ static void build_setup(void)
 {
     scr_setup = screen();
 
-    lv_obj_t *t = ui_label(scr_setup, f22, C_TEXT, "Настройка Wi-Fi");
+    lv_obj_t *t = th_label(scr_setup, f22, TH_TEXT, "Настройка Wi-Fi");
     lv_obj_set_pos(t, 24, 22);
 
-    lv_obj_t *steps = ui_label(scr_setup, f14, C_DIM,
+    lv_obj_t *steps = th_label(scr_setup, f14, TH_TEXT_DIM,
         "1. Подключите телефон к сети экрана -\n    наведите камеру на код или введите вручную.\n"
         "2. Откроется страница настройки.\n    Если нет - откройте 192.168.4.1");
     lv_obj_set_pos(steps, 24, 64);
@@ -321,16 +324,16 @@ static void build_setup(void)
     lv_qrcode_set_light_color(qr, lv_color_hex(0xFFFFFF));
     lv_obj_center(qr);
 
-    lv_obj_t *l1 = ui_label(scr_setup, f14, C_DIM, "Сеть");
+    lv_obj_t *l1 = th_label(scr_setup, f14, TH_TEXT_DIM, "Сеть");
     lv_obj_set_pos(l1, 256, 182);
-    lbl_setup_ap = ui_label(scr_setup, f22, C_TEXT, "");
+    lbl_setup_ap = th_label(scr_setup, f22, TH_TEXT, "");
     lv_obj_set_pos(lbl_setup_ap, 256, 204);
-    lv_obj_t *l2 = ui_label(scr_setup, f14, C_DIM, "Пароль");
+    lv_obj_t *l2 = th_label(scr_setup, f14, TH_TEXT_DIM, "Пароль");
     lv_obj_set_pos(l2, 256, 252);
-    lbl_setup_pass = ui_label(scr_setup, f22, C_ACC, "");
+    lbl_setup_pass = th_label(scr_setup, f22, TH_ACTIVE, "");
     lv_obj_set_pos(lbl_setup_pass, 256, 274);
 
-    btn_setup_back = button(scr_setup, "←  Назад", C_CARD, C_TEXT, back_main);
+    btn_setup_back = button(scr_setup, "←  Назад", TH_PANEL_SURFACE, TH_TEXT, back_main);
     lv_obj_align(btn_setup_back, LV_ALIGN_BOTTOM_RIGHT, -20, -20);
 }
 
@@ -353,20 +356,20 @@ static void build_ota(void)
 {
     ota_box = lv_obj_create(lv_layer_top());
     lv_obj_set_size(ota_box, LV_PCT(100), LV_PCT(100));
-    lv_obj_set_style_bg_color(ota_box, lv_color_hex(C_BG), 0);
+    th_bind(ota_box, LV_STYLE_BG_COLOR, 0, TH_PANEL_BG);
     lv_obj_set_style_bg_opa(ota_box, LV_OPA_90, 0);
     lv_obj_set_style_border_width(ota_box, 0, 0);
     lv_obj_set_style_radius(ota_box, 0, 0);
-    ota_lbl = ui_label(ota_box, f22, C_TEXT, "");
+    ota_lbl = th_label(ota_box, f22, TH_TEXT, "");
     lv_obj_align(ota_lbl, LV_ALIGN_CENTER, 0, -50);
     ota_bar = lv_bar_create(ota_box);
     lv_obj_set_size(ota_bar, 360, 10);
     lv_obj_align(ota_bar, LV_ALIGN_CENTER, 0, 0);
-    lv_obj_set_style_bg_color(ota_bar, lv_color_hex(C_LINE), LV_PART_MAIN);
-    lv_obj_set_style_bg_color(ota_bar, lv_color_hex(C_ACC), LV_PART_INDICATOR);
-    ota_pct = ui_label(ota_box, f18, C_DIM, "");
+    th_bind(ota_bar, LV_STYLE_BG_COLOR, LV_PART_MAIN, TH_PANEL_LINE);
+    th_bind(ota_bar, LV_STYLE_BG_COLOR, LV_PART_INDICATOR, TH_ACTIVE);
+    ota_pct = th_label(ota_box, f18, TH_TEXT_DIM, "");
     lv_obj_align(ota_pct, LV_ALIGN_CENTER, 0, 34);
-    lv_obj_t *hint = ui_label(ota_box, f14, C_DIM, "Не выключайте питание");
+    lv_obj_t *hint = th_label(ota_box, f14, TH_TEXT_DIM, "Не выключайте питание");
     lv_obj_align(hint, LV_ALIGN_CENTER, 0, 70);
     lv_obj_add_flag(ota_box, LV_OBJ_FLAG_HIDDEN);
 }
@@ -401,8 +404,12 @@ static void refresh(lv_timer_t *t)
     tiles_clock_tick();
 
     // Значок связи: красный - нет Wi-Fi, жёлтый - нет брокера, белый - всё в порядке.
-    uint32_t c = !ns.sta_connected ? C_BAD : (tiles_count() && !mq_connected()) ? C_ACC : C_TEXT;
-    lv_obj_set_style_text_color(lbl_wifi, lv_color_hex(c), 0);
+    if (!ns.sta_connected) {
+        lv_obj_set_style_text_color(lbl_wifi, lv_color_hex(C_BAD), 0);
+        th_bind(lbl_wifi, LV_STYLE_TEXT_COLOR, 0, TH_COUNT);   // красный - не от темы
+    } else {
+        th_bind(lbl_wifi, LV_STYLE_TEXT_COLOR, 0, tiles_count() && !mq_connected() ? TH_ACTIVE : TH_TEXT);
+    }
 
     if (lv_screen_active() == scr_dev) fill_device(&ns);
 

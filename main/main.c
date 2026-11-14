@@ -5,6 +5,7 @@
 #include "esp_heap_caps.h"
 #include "cJSON.h"
 #include "app.h"
+#include "theme.h"
 
 static const char *TAG = "main";
 
@@ -26,6 +27,7 @@ void app_main(void)
         nvs_flash_init();
     }
     settings_load();
+    theme_load();               // последняя палитра с сервера - до первых экранов
     lv_mem_psram_link();
     cJSON_Hooks hooks = {.malloc_fn = ps_malloc, .free_fn = free};
     cJSON_InitHooks(&hooks);
@@ -42,6 +44,7 @@ void app_main(void)
     web_start();
     mq_start();
     layout_sync_start();
+    theme_sync_start();
     history_start();
     ota_start();
 }

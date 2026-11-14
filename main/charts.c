@@ -15,16 +15,20 @@
 #define CHART_MAX_SERIES 3
 #define CHART_MAX_POINTS 120
 #define CHART_MAX_TILES 16
-#define CHART_BG1 0x26272B
-#define CHART_BG2 0x1C1D20
-#define CHART_EDGE 0x303135
-#define CHART_INK 0xF2F2F4
-#define CHART_DIM 0x8E8E90
-#define CHART_GRID 0x4A4B50
+// Роли палитры темы (theme.h), по умолчанию графит.
+#define CHART_BG1 TH(TILE_HI)
+#define CHART_BG2 TH(TILE_BG)
+#define CHART_EDGE TH(TILE_BORDER)
+#define CHART_INK TH(TEXT)
+#define CHART_DIM TH(TEXT_DIM)
+#define CHART_GRID TH(CHART_GRID)
+// Цвет линии: роль темы, если серия без своего color.
+#define SC(s) ((s)->role >= 0 ? g_th.c[(s)->role] : (s)->color)
 
 typedef struct {
     char *topic, *unit, *label;
     uint32_t color;
+    int role;                      // роль палитры (chart.*), -1 - свой color
     int digits;
     bool fixed_scale, has_current;
     float min, max, current;
@@ -92,17 +96,27 @@ static bool contains_ci(const char *s, const char *needle)
     return false;
 }
 
-// Цвета величин из светлой темы wb-svg-panel (builtin_themes/light.yaml).
+// Роль линии по умолчанию: цвет величины или следующий из палитры темы.
 // Свой color серии по-прежнему сильнее этого назначения.
-static uint32_t default_series_color(const cJSON *item, int index, const char *topic)
+static int default_series_role(const cJSON *item, int index, const char *topic)
 {
     const cJSON *label = cJSON_GetObjectItem(item, "label");
     const char *name = cJSON_IsString(label) ? label->valuestring : "";
-    if (contains_ci(topic, "co2") || contains_ci(name, "co2")) return 0x4E9A6B;
+    if (contains_ci(topic, "co2") || contains_ci(name, "co2")) return TH_CH_CO2;
     if (contains_ci(topic, "voc") || contains_ci(topic, "air quality") ||
-        contains_ci(name, "voc")) return 0x8E6BC4;
-    const uint32_t colors[CHART_MAX_SERIES] = {0xE08A2D, 0x3B93C4, 0x4E9A6B};
-    return colors[index];
+        contains_ci(name, "voc")) return TH_CH_VOC;
+    return TH_SERIES1 + index;
+}
+
+// Сервер с темами (wb-svg-panel 1.78) присылает role вместе с color:
+// color - для прошивок постарше, role - чтобы линия менялась с темой.
+static void series_color(chart_series_t *s, const cJSON *item, int index)
+{
+    const cJSON *role = cJSON_GetObjectItem(item, "role");
+    s->role = cJSON_IsString(role) ? th_role_find(role->valuestring) : -1;
+    if (s->role >= 0) return;
+    s->color = cjcolor(item, 0x1000000);
+    if (s->color == 0x1000000) s->role = default_series_role(item, index, s->topic);
 }
 
 int charts_count(void) { return s_charts_count; }
@@ -131,7 +145,7 @@ chart_t *chart_parse(const cJSON *o, const char *title)
         s->digits = cjint(item, "digits", 1);
         if (s->digits < 0) s->digits = 0;
         if (s->digits > 3) s->digits = 3;
-        s->color = cjcolor(item, default_series_color(item, c->nseries, s->topic));
+        series_color(s, item, c->nseries);
         const cJSON *lo = cJSON_GetObjectItem(item, "min");
         const cJSON *hi = cJSON_GetObjectItem(item, "max");
         if (cJSON_IsNumber(lo) && cJSON_IsNumber(hi) && hi->valuedouble > lo->valuedouble) {
@@ -313,13 +327,13 @@ static void draw_curve(const chart_series_t *s, const chart_scale_t *scale,
         if (fy > 1) fy = 1;
         int nx = x + (int)lroundf(fx * (w - 1));
         int ny = y + h - 1 - (int)lroundf(fy * (h - 1));
-        if (i) d_line(px, py, nx, ny, (dots ? 2.6f : 1.8f) * size_scale, s->color, LV_OPA_COVER);
+        if (i) d_line(px, py, nx, ny, (dots ? 2.6f : 1.8f) * size_scale, SC(s), LV_OPA_COVER);
         px = nx;
         py = ny;
     }
     if (dots) {
         d_circle(px, py, 4.2f * size_scale, CHART_BG2, LV_OPA_COVER);
-        d_circle(px, py, 2.6f * size_scale, s->color, LV_OPA_COVER);
+        d_circle(px, py, 2.6f * size_scale, SC(s), LV_OPA_COVER);
     }
 }
 
@@ -334,7 +348,7 @@ void chart_draw_tile(const chart_t *c, int x, int y, int w, int h, bool pressed,
     int pad = chart_px(scale, 12);
     d_vgrad(x, y, w, h, radius, CHART_BG1, LV_OPA_COVER, CHART_BG2, LV_OPA_COVER);
     d_border(x, y, w, h, radius, chart_px(scale, 1), CHART_EDGE, LV_OPA_COVER);
-    if (pressed) d_rect(x, y, w, h, radius, 0xFFFFFF, 18);
+    if (pressed) d_rect(x, y, w, h, radius, TH(TILE_PRESSED), 18);
     d_text(small, CHART_DIM, LV_OPA_COVER, x + pad, y + chart_px(scale, 18), 0, c->title);
 
     // В шапке видны все текущие значения, а не только первая серия.
@@ -348,7 +362,7 @@ void chart_draw_tile(const chart_t *c, int x, int y, int w, int h, bool pressed,
         snprintf(b, sizeof(b), "%s%s%s%s%s", prefix, prefix[0] ? " " : "", value,
                  s->unit && s->unit[0] && s->has_current ? " " : "",
                  s->unit && s->has_current ? s->unit : "");
-        d_text(i ? tile_font(true, 17) : tile_font(true, 21), s->color, LV_OPA_COVER,
+        d_text(i ? tile_font(true, 17) : tile_font(true, 21), SC(s), LV_OPA_COVER,
                x + w - pad, y + chart_px(scale, 40 + i * 23), 2, b);
     }
 
@@ -385,13 +399,13 @@ void chart_draw_tile(const chart_t *c, int x, int y, int w, int h, bool pressed,
         if (c->series[0].count > 1) {
             snprintf(b, sizeof(b), "%.*f", scale_digits(scales[0].step),
                      scales[0].lo + (scales[0].hi - scales[0].lo) * f);
-            d_text(small, c->series[0].color, LV_OPA_COVER,
+            d_text(small, SC(&c->series[0]), LV_OPA_COVER,
                    px + chart_px(scale, 5), gy + chart_px(scale, 4), 0, b);
         }
         if (c->nseries > 1 && c->series[1].count > 1) {
             snprintf(b, sizeof(b), "%.*f", scale_digits(scales[1].step),
                      scales[1].lo + (scales[1].hi - scales[1].lo) * f);
-            d_text(small, c->series[1].color, LV_OPA_COVER,
+            d_text(small, SC(&c->series[1]), LV_OPA_COVER,
                    px + pw - chart_px(scale, 5), gy + chart_px(scale, 4), 2, b);
         }
     }
@@ -453,8 +467,8 @@ static void chart_draw_full(lv_event_t *e)
     chart_t *c = s_chart_open;
     if (!c) return;
     gfx_begin(lv_event_get_layer(e));
-    d_rect(0, 0, 480, 480, 0, 0x111214, LV_OPA_COVER);
-    d_circle(36, 36, 26, 0x35363B, LV_OPA_COVER);
+    d_rect(0, 0, 480, 480, 0, TH(PAD_BG), LV_OPA_COVER);
+    d_circle(36, 36, 26, TH(BUTTON), LV_OPA_COVER);
     d_line(40, 25, 29, 36, 3, CHART_INK, LV_OPA_COVER);
     d_line(29, 36, 40, 47, 3, CHART_INK, LV_OPA_COVER);
     d_text(F17, CHART_INK, LV_OPA_COVER, 240, 42, 1, c->title);
@@ -466,13 +480,13 @@ static void chart_draw_full(lv_event_t *e)
     for (int i = 0; i < c->nseries; i++) {
         const chart_series_t *s = &c->series[i];
         int cx = 20 + i * 152;
-        d_circle(cx + 4, 91, 3.5f, s->color, LV_OPA_COVER);
+        d_circle(cx + 4, 91, 3.5f, SC(s), LV_OPA_COVER);
         if (s->label && s->label[0]) d_text(F12, CHART_DIM, LV_OPA_COVER, cx + 13, 96, 0, s->label);
         value_text(s, b, sizeof(b));
         size_t n = strlen(b);
         if (s->unit && s->unit[0] && s->has_current)
             snprintf(b + n, sizeof(b) - n, " %s", s->unit);
-        d_text(F17, s->color, LV_OPA_COVER, cx + 13, s->label && s->label[0] ? 121 : 111, 0, b);
+        d_text(F17, SC(s), LV_OPA_COVER, cx + 13, s->label && s->label[0] ? 121 : 111, 0, b);
     }
 
     // Справа оставляем место второй шкале, а не выводим её поверх кривых.
@@ -504,13 +518,13 @@ static void chart_draw_full(lv_event_t *e)
         if (left->count > 1) {
             snprintf(b, sizeof(b), "%.*f", scale_digits(scales[0].step),
                      scales[0].lo + (scales[0].hi - scales[0].lo) * f);
-            d_text(F12, left->color, LV_OPA_COVER, x - 8, gy + 4, 2, b);
+            d_text(F12, SC(left), LV_OPA_COVER, x - 8, gy + 4, 2, b);
         }
         if (c->nseries > 1 && c->series[1].count > 1) {
             const chart_series_t *right = &c->series[1];
             snprintf(b, sizeof(b), "%.*f", scale_digits(scales[1].step),
                      scales[1].lo + (scales[1].hi - scales[1].lo) * f);
-            d_text(F12, right->color, LV_OPA_COVER, x + w + 8, gy + 4, 0, b);
+            d_text(F12, SC(right), LV_OPA_COVER, x + w + 8, gy + 4, 0, b);
         }
     }
     d_text(F12, CHART_DIM, LV_OPA_COVER, 240, 457, 1,
@@ -561,7 +575,7 @@ void chart_open(chart_t *c)
     s_chart_prev = lv_screen_active();
     s_chart_root = lv_obj_create(NULL);
     lv_obj_remove_style_all(s_chart_root);
-    lv_obj_set_style_bg_color(s_chart_root, lv_color_hex(0x111214), 0);
+    th_bind(s_chart_root, LV_STYLE_BG_COLOR, 0, TH_PAD_BG);
     lv_obj_set_style_bg_opa(s_chart_root, LV_OPA_COVER, 0);
     lv_obj_add_flag(s_chart_root, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_remove_flag(s_chart_root, LV_OBJ_FLAG_SCROLLABLE);

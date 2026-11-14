@@ -11,6 +11,7 @@ static void localtime_r(const time_t *stamp, struct tm *out)
 #include "lvgl.h"
 lv_font_t *f14, *f18, *f22, *f28b, *f80l;
 #include "ui_priv.h"
+#include "../../main/theme.c"
 static int sim_commands;
 void mq_publish(const char *t, const char *p)
 {
@@ -76,11 +77,11 @@ camera_t *camera_tile_create(lv_obj_t *card, const char *title, const char *snap
     lv_obj_t *bar = lv_obj_create(card);
     lv_obj_set_size(bar, w, bar_h);
     lv_obj_align(bar, LV_ALIGN_BOTTOM_MID, 0, 0);
-    lv_obj_set_style_bg_color(bar, lv_color_hex(0x1C1D20), 0);
+    th_bind(bar, LV_STYLE_BG_COLOR, 0, TH_TILE_BG);
     lv_obj_set_style_bg_opa(bar, LV_OPA_COVER, 0);
     lv_obj_set_style_border_width(bar, 0, 0);
     lv_obj_set_style_pad_all(bar, 0, 0);
-    lv_obj_t *label = ui_label(card, tile_font(false, 15), C_TEXT, title);
+    lv_obj_t *label = th_label(card, tile_font(false, 15), TH_TEXT, title);
     lv_obj_align(label, LV_ALIGN_BOTTOM_MID, 0, -7);
     return c;
 }
@@ -130,6 +131,29 @@ static void sim_touch_drag(lv_indev_t *indev, int x0, int y0, int x1, int y1)
     sim_touch_step(indev, x1, y1, false);
 }
 
+// Палитра темы: SIM_THEME=файл ответа /api/screen/<имя>/theme. С
+// SIM_THEME_LIVE=1 она применяется уже после постройки и первой отрисовки -
+// как смена темы на ходу; снимок должен совпасть с постройкой сразу в теме.
+static bool sim_theme(bool live, lv_display_t *d)
+{
+    const char *path = getenv("SIM_THEME");
+    const char *when = getenv("SIM_THEME_LIVE");
+    bool want_live = when && atoi(when);
+    if (!path || want_live != live) return true;
+    if (live) {
+        lv_refr_now(d);
+        lv_refr_now(d);
+    }
+    th_palette_t p;
+    char err[64];
+    if (!th_parse(readf(path), &p, err, sizeof(err))) {
+        fprintf(stderr, "палитра не принята: %s\n", err);
+        return false;
+    }
+    th_apply(&p);
+    return true;
+}
+
 int main(int argc, char **argv)
 {
     // sim tile.json values.txt out.ppm [sheet]
@@ -144,10 +168,11 @@ int main(int argc, char **argv)
     f18 = ttf(false, 17);
     f22 = ttf(true, 20);
     f28b = ttf(true, 28);
+    if (!sim_theme(false, d)) return 20;
     if (!strcmp(argv[1], "--screen")) {
         // Как в ui.c: главный экран строится до того, как становится активным.
         lv_obj_t *scr = lv_obj_create(NULL);
-        lv_obj_set_style_bg_color(scr, lv_color_hex(C_BG), 0);
+        th_bind(scr, LV_STYLE_BG_COLOR, 0, TH_PANEL_BG);
         lv_obj_set_style_bg_opa(scr, LV_OPA_COVER, 0);
         lv_obj_remove_flag(scr, LV_OBJ_FLAG_SCROLLABLE);
         lv_obj_t *tabbar = lv_obj_create(scr);
@@ -299,6 +324,7 @@ int main(int argc, char **argv)
                 printf("swipe-check: направления, диммер и подавление клика — OK\n");
             }
         }
+        if (!sim_theme(true, d)) return 20;
         lv_refr_now(d);
         lv_refr_now(d);
         FILE *o = fopen(argv[4], "wb");
@@ -319,6 +345,7 @@ int main(int argc, char **argv)
     }
     pad_open(p);
     if (argc > 4) s_sheet = atoi(argv[4]);
+    if (!sim_theme(true, d)) return 20;
     lv_refr_now(d);
     lv_refr_now(d);
     FILE *o = fopen(argv[3], "wb");

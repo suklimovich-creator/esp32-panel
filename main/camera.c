@@ -1,6 +1,8 @@
 // Камеры wb-svg-panel: JPEG в видимых плитках и один MJPEG/JPEG на полном экране.
 #include "app.h"
 #include "ui_priv.h"
+
+#define CAM_INK 0xF2F2F4
 #include "camera_mjpeg.h"
 #include "jpeg_decoder.h"
 #include <string.h>
@@ -497,18 +499,18 @@ camera_t *camera_tile_create(lv_obj_t *card, const char *title, const char *snap
     lv_obj_set_size(bar, w, bar_h);
     lv_obj_align(bar, LV_ALIGN_BOTTOM_MID, 0, 0);
     // Нижняя полоса продолжает карточку, а не выглядит отдельным чёрным блоком.
-    lv_obj_set_style_bg_color(bar, lv_color_hex(0x1C1D20), 0);
+    th_bind(bar, LV_STYLE_BG_COLOR, 0, TH_TILE_BG);
     lv_obj_set_style_bg_opa(bar, LV_OPA_COVER, 0);
     lv_obj_set_style_border_width(bar, 0, 0);
     lv_obj_set_style_radius(bar, (int)(12 * scale), 0);
     lv_obj_set_style_pad_all(bar, 0, 0);
     lv_obj_remove_flag(bar, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_t *label = ui_label(card, tile_font(false, 15), C_TEXT, c->title);
+    lv_obj_t *label = th_label(card, tile_font(false, 15), TH_TEXT, c->title);
     lv_obj_set_width(label, w - 16);
     lv_label_set_long_mode(label, LV_LABEL_LONG_DOT);
     lv_obj_align(label, LV_ALIGN_BOTTOM_MID, 0, -(bar_h - tile_font(false, 15)->line_height) / 2);
 
-    lv_obj_t *status = ui_label(card, tile_font(false, 15), C_TEXT, "Загрузка…");
+    lv_obj_t *status = th_label(card, tile_font(false, 15), TH_TEXT, "Загрузка…");
     lv_obj_set_width(status, w - 20);
     lv_obj_set_style_text_align(status, LV_TEXT_ALIGN_CENTER, 0);
     lv_label_set_long_mode(status, LV_LABEL_LONG_WRAP);
@@ -542,7 +544,7 @@ void camera_open(camera_t *c)
     lv_obj_set_size(image, 480, 396);
     lv_obj_set_pos(image, 0, 72);
     lv_obj_add_flag(image, LV_OBJ_FLAG_HIDDEN);
-    lv_obj_t *status = ui_label(s_full_root, f18, C_TEXT, "Загрузка…");
+    lv_obj_t *status = ui_label(s_full_root, f18, CAM_INK, "Загрузка…");
     lv_obj_set_width(status, 400);
     lv_obj_set_style_text_align(status, LV_TEXT_ALIGN_CENTER, 0);
     lv_label_set_long_mode(status, LV_LABEL_LONG_WRAP);
@@ -553,14 +555,15 @@ void camera_open(camera_t *c)
     lv_obj_set_pos(back, 12, 12);
     lv_obj_set_ext_click_area(back, 12);
     lv_obj_set_style_radius(back, 16, 0);
+    // Полный экран камеры - всегда тёмный, как кадр: от темы не зависит.
     lv_obj_set_style_bg_color(back, lv_color_hex(0x181A21), 0);
     lv_obj_set_style_bg_opa(back, LV_OPA_80, 0);
     lv_obj_set_style_shadow_width(back, 0, 0);
-    lv_obj_t *label = ui_label(back, f18, C_TEXT, "← Назад");
+    lv_obj_t *label = ui_label(back, f18, CAM_INK, "← Назад");
     lv_obj_center(label);
     lv_obj_add_event_cb(back, back_cb, LV_EVENT_CLICKED, NULL);
 
-    lv_obj_t *title = ui_label(s_full_root, f18, C_TEXT, c->title);
+    lv_obj_t *title = ui_label(s_full_root, f18, CAM_INK, c->title);
     lv_obj_set_width(title, 280);
     lv_obj_set_style_text_align(title, LV_TEXT_ALIGN_CENTER, 0);
     lv_label_set_long_mode(title, LV_LABEL_LONG_DOT);

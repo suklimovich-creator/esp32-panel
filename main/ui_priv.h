@@ -2,13 +2,16 @@
 #pragma once
 #include "lvgl.h"
 
-#define C_BG     0x0E0F13
-#define C_CARD   0x181A21
-#define C_CARD_ON 0x23262F
-#define C_LINE   0x2A2D36
-#define C_TEXT   0xECEEF2
-#define C_DIM    0x8B90A0
-#define C_ACC    0xFFB547   // тёплый акцент
+#include "theme.h"
+
+// Служебные экраны - тоже роли палитры (theme.h).
+#define C_BG     TH(PANEL_BG)
+#define C_CARD   TH(PANEL_SURFACE)
+#define C_CARD_ON TH(PANEL_SURFACE_ON)
+#define C_LINE   TH(PANEL_LINE)
+#define C_TEXT   TH(TEXT)
+#define C_DIM    TH(TEXT_DIM)
+#define C_ACC    TH(ACTIVE)   // тёплый акцент
 #define C_LIGHT  0xFFD27A   // свет
 #define C_OFF    0x4A4F5C   // выключенное
 #define C_OK     0x34C759

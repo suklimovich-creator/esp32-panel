@@ -52,7 +52,6 @@ static camera_view_t s_full_view;
 static lv_obj_t *s_full_root, *s_full_prev;
 static TaskHandle_t s_task;
 static volatile bool s_stop;
-static bool s_exiting;
 static uint8_t *s_jpeg;
 static StaticSemaphore_t s_mutex_mem;
 static SemaphoreHandle_t s_mutex;
@@ -330,17 +329,19 @@ static void release_pending_views(void)
 static void camera_task(void *arg)
 {
     (void)arg;
-    s_exiting = true;   // запуск тоже защищаем от пересечения по общему JPEG-буферу
     s_jpeg = ps_malloc(CAMERA_JPEG_MAX);
-    if (!s_jpeg) ESP_LOGE(TAG, "нет PSRAM для JPEG");
-    if (s_jpeg) s_exiting = false;
+    if (!s_jpeg) {
+        // Без буфера кадров не будет; пауза не даёт wake_task тут же
+        // пересоздавать задачу в горячий цикл при нехватке PSRAM.
+        ESP_LOGE(TAG, "нет PSRAM для JPEG");
+        vTaskDelay(pdMS_TO_TICKS(5000));
+    }
     uint32_t retry_ms = CAMERA_SNAPSHOT_MS;
 
     while (s_jpeg) {
         state_lock();
         bool done = s_stop || !work_locked();
         if (done) {
-            s_exiting = true;
             state_unlock();
             break;
         }
@@ -388,7 +389,6 @@ static void camera_task(void *arg)
         }
     }
 
-    s_exiting = true;
     free(s_jpeg);
     s_jpeg = NULL;
     free_camera_list(s_retired);
@@ -396,7 +396,6 @@ static void camera_task(void *arg)
     state_lock();
     release_pending_views();
     s_task = NULL;
-    s_exiting = false;
     state_unlock();
     // Если за время остановки открыли другую камеру или вкладку, продолжим
     // работу новой задачей: общий JPEG-буфер уже освобождён старой.
@@ -411,11 +410,11 @@ static void wake_task(void)
     TaskHandle_t task = s_task;
     // Задача могла выйти до того, как UI пометил старые кадры на очистку.
     if (!task) release_pending_views();
-    if (need && !task) s_stop = false;
-    state_unlock();
-    if (need && task) {
-        xTaskNotifyGive(task);
-    } else if (need) {
+    if (need && !task) {
+        // Создаём под мьютексом: выходящая задача тоже вызывает wake_task,
+        // и без блокировки обе могли бы увидеть s_task == NULL и запустить
+        // две задачи над одним общим JPEG-буфером.
+        s_stop = false;
         BaseType_t ok = xTaskCreate(camera_task, "camera", 8192, NULL, 2, &s_task);
         if (ok != pdPASS) {
             s_task = NULL;
@@ -424,6 +423,7 @@ static void wake_task(void)
     } else if (task) {
         xTaskNotifyGive(task);
     }
+    state_unlock();
 }
 
 // Только просим задачу завершиться. UI не ждёт HTTP-read/close: возврат на
@@ -630,6 +630,11 @@ void camera_main_visible(bool visible)
     state_unlock();
     if (!visible) stop_task();
     wake_task();
+}
+
+bool camera_full_active(void)
+{
+    return s_full_active;
 }
 
 void camera_reset(void)

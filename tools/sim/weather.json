@@ -1,0 +1,30 @@
+{
+  "cols": 3,
+  "pages": [
+    {
+      "title": "Погода",
+      "tiles": [
+        {
+          "type": "weather",
+          "title": "Улица",
+          "w": 2,
+          "h": 2,
+          "temp": "/devices/weather/controls/temperature",
+          "desc": "/devices/weather/controls/description",
+          "hum": "/devices/weather/controls/humidity",
+          "press": "/devices/weather/controls/pressure",
+          "wind": "/devices/weather/controls/windspeed",
+          "tmin": "/devices/weather/controls/temp_min_12h",
+          "tmax": "/devices/weather/controls/temp_max_12h",
+          "series": {
+            "temp": "/devices/weather/controls/temp_series",
+            "code": "/devices/weather/controls/code_series",
+            "prob": "/devices/weather/controls/precip_prob_series",
+            "cloud": "/devices/weather/controls/cloud_series",
+            "start": "/devices/weather/controls/forecast_start"
+          }
+        }
+      ]
+    }
+  ]
+}

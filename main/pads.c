@@ -1647,6 +1647,24 @@ static bool forecast_graph(const pad_t *p, float X0, float X1, float Y0, float Y
         if (tv[i] < fmin) { fmin = tv[i]; imin = i; }
         if (tv[i] > fmax) { fmax = tv[i]; imax = i; }
     }
+    // Заливка под кривой, как wfade у панели: полупрозрачный синий от
+    // кривой до нижней линии. Кривая и точки рисуются поверх.
+    {
+        int xi0 = (int)ceilf(X0), xi1 = (int)floorf(X1);
+        for (int xi = xi0; xi <= xi1; xi++) {
+            float t = (xi - X0) / xstep;
+            if (t < 0) t = 0;
+            if (t > n - 1) t = n - 1;
+            int i = (int)t;
+            if (i > n - 2) i = n - 2;
+            float k = t - i;
+            float yv = tv[i] + (tv[i + 1] - tv[i]) * k;
+            float yy = Y1 - (Y1 - Y0) * (yv - grid_lo) / (grid_hi - grid_lo);
+            if (yy < Y0) yy = Y0;
+            if (Y1 - yy >= 1.0f)
+                d_line(xi + 0.5f, yy, xi + 0.5f, Y1, 1, 0x5AA9E6, 46);
+        }
+    }
     for (int i = 0; i < n; i++) {
         float xx = X0 + xstep * i;
         float yy = Y1 - (Y1 - Y0) * (tv[i] - grid_lo) / (grid_hi - grid_lo);
@@ -2907,11 +2925,12 @@ static void tile_weather(const pad_t *p, int x, int y, int w, int h)
     if (clipped) L->_clip_area = cl;
 
     if (h >= PS(90))
-        // График поднят выше: почти от верха плитки, а текущие значение и
-        // описание поверх него, как в forecast у wb-svg-panel. Снизу
-        // остаются название плитки и строка показателей.
+        // Пропорции forecast у wb-svg-panel: кривая между 40% и 82% высоты.
+        // Сверху остаются значок, текущая температура и описание, снизу -
+        // часы со значками и название плитки. Низким плиткам верх прижат
+        // ниже описания, чтобы сетка не наезжала на температуру.
         forecast_graph(p, x + PS(3), x + w - PS(3),
-                       y + PS(34), y + h * 0.88f,
+                       y + fmaxf(h * 0.40f, PS(72)), y + h * 0.82f,
                        P_F12, s_tile_scale, true);
 
     int hour = ui_hour_now();

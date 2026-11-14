@@ -90,6 +90,7 @@ void camera_close(void) {}
 void camera_page_visible(int page) { sim_camera_page = page; }
 void camera_main_visible(bool visible) { sim_camera_visible = visible; }
 void camera_reset(void) {}
+bool camera_full_active(void) { return false; }
 #include "../../main/tiles.c"
 
 static uint32_t fb[480 * 480];

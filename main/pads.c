@@ -2742,9 +2742,11 @@ typedef struct {
     const char *icon;
 } clock_data_t;
 
-static const lv_font_t *clock_font(bool bold, int base, float k, const char *text, int width)
+// Крупнейший кегль из TILE_FONTS не больше want (базовые единицы), у которого
+// text укладывается в width пикселей экрана. В px — выбранный базовый кегль.
+static const lv_font_t *fit_font(bool bold, float want, const char *text, int width, int *px)
 {
-    int want = (int)lroundf(base * k), best = 0;
+    int best = 0;
     for (size_t i = 0; i < sizeof(TILE_FONTS) / sizeof(TILE_FONTS[0]); i++) {
         if (TILE_FONTS[i].bold != bold || TILE_FONTS[i].px > want) continue;
         const lv_font_t *f = tile_font(bold, TILE_FONTS[i].px);
@@ -2757,7 +2759,13 @@ static const lv_font_t *clock_font(bool bold, int base, float k, const char *tex
             if (TILE_FONTS[i].bold == bold && (!best || TILE_FONTS[i].px < best))
                 best = TILE_FONTS[i].px;
     }
+    if (px) *px = best;
     return tile_font(bold, best);
+}
+
+static const lv_font_t *clock_font(bool bold, int base, float k, const char *text, int width)
+{
+    return fit_font(bold, lroundf(base * k), text, width, NULL);
 }
 
 static void clock_data(clock_data_t *d, const pad_t *p)
@@ -2869,6 +2877,103 @@ static void weather_square(const pad_t *p, const clock_data_t *d, int x, int y, 
                          PS(150 * k), d->metrics[i]);
 }
 
+// Одиночные режимы (0.12.2) не масштабируют блок 1×1, а заполняют всю
+// плитку: кегль времени и температуры считается от её высоты и ширины.
+// Высота цифр Inter — около 0,73 кегля.
+#define CAP 0.73f
+
+static void clock_fill(const clock_data_t *d, int x, int y, int w, int h)
+{
+    float W = w / s_tile_scale, H = h / s_tile_scale;
+    int tpx = 0, dpx = 0;
+    if (H < 100 && W >= 260) {
+        // Низкая широкая: в две строки время вышло бы мелким, поэтому
+        // время и дата стоят рядом на общей базовой линии.
+        const lv_font_t *df = fit_font(false, fminf(21, H * 0.26f), NULL, 0, &dpx);
+        int dw = text_w(df, d->date), gap = PS(14);
+        const lv_font_t *tf = fit_font(true, H * 0.70f, d->time, (int)(w * 0.9f) - dw - gap, &tpx);
+        float rw = text_w(tf, d->time) + gap + dw, left = x + (w - rw) / 2.0f;
+        float base = y + h / 2.0f + PS(CAP * tpx / 2);
+        d_text(tf, K_INK, LV_OPA_COVER, left, base, 0, d->time);
+        d_text(df, K_DIM, LV_OPA_COVER, left + text_w(tf, d->time) + gap, base, 0, d->date);
+        return;
+    }
+    bool date = H >= 56;
+    const lv_font_t *tf = fit_font(true, H * (H < 100 ? 0.60f : 0.52f), d->time,
+                                   (int)(w * 0.88f), &tpx);
+    const lv_font_t *df = date ? fit_font(false, fmaxf(12, fminf(26, tpx * 0.24f)),
+                                          NULL, 0, &dpx) : NULL;
+    float gap = date ? 0.26f * tpx : 0, block = CAP * tpx + gap + (date ? CAP * dpx : 0);
+    float base = y + PS((H - block) / 2 + CAP * tpx);
+    d_text(tf, K_INK, LV_OPA_COVER, x + w / 2.0f, base, 1, d->time);
+    if (df) {
+        // В узкой половине 1×0.5 полная дата не помещается: «сб, 14 ноября»
+        // сокращается до «сб, 14», а не обрывается многоточием.
+        char date[sizeof(d->date)];
+        snprintf(date, sizeof(date), "%s", d->date);
+        char *sp = strrchr(date, ' ');
+        if (text_w(df, date) > (int)(w * 0.9f) && sp) *sp = 0;
+        d_text_ellipsize(df, K_DIM, x + w / 2.0f, base + PS(gap + CAP * dpx), 1,
+                         (int)(w * 0.9f), date);
+    }
+}
+
+// Значок и температура по центру области: в низкой — одной строкой,
+// в высокой — значок над температурой. Левая половина широкой погоды
+// и правая половина часов 1×0.5.
+static void weather_row(const clock_data_t *d, float x, float y, int w, int h, float want)
+{
+    float H = h / s_tile_scale;
+    int tpx = 0;
+    if (H >= 100) {
+        float isz = d->icon ? H * 0.28f : 0, gap = d->icon ? H * 0.07f : 0;
+        const lv_font_t *tf = fit_font(true, want, d->temp, (int)(w * 0.9f), &tpx);
+        float top = y + PS((H - isz - gap - CAP * tpx) / 2);
+        if (d->icon) d_icon(d->icon, x + w / 2.0f, top + PS(isz) / 2.0f, PS(isz),
+                            PL(fmaxf(1.8f, isz / 18)), K_INK, LV_OPA_COVER);
+        d_text(tf, K_INK, LV_OPA_COVER, x + w / 2.0f, top + PS(isz + gap + CAP * tpx), 1, d->temp);
+        return;
+    }
+    float isz = d->icon ? fminf(want * 0.7f, H * 0.5f) : 0, gap = d->icon ? want * 0.18f : 0;
+    const lv_font_t *tf = fit_font(true, want, d->temp,
+                                   (int)(w * 0.92f) - PS(isz + gap), &tpx);
+    float rw = PS(isz + gap) + text_w(tf, d->temp), left = x + (w - rw) / 2.0f;
+    float mid = y + h / 2.0f;
+    if (d->icon) d_icon(d->icon, left + PS(isz) / 2.0f, mid, PS(isz),
+                        PL(fmaxf(1.8f, isz / 18)), K_INK, LV_OPA_COVER);
+    d_text(tf, K_INK, LV_OPA_COVER, left + PS(isz + gap), mid + PS(CAP * tpx / 2), 0, d->temp);
+}
+
+static void weather_fill(const pad_t *p, const clock_data_t *d, int x, int y, int w, int h)
+{
+    float W = w / s_tile_scale, H = h / s_tile_scale;
+    if (W < 130 && H < 100) {
+        weather_row(d, x, y, w, h, H * 0.42f);
+        return;
+    }
+    if (W < 260 || W / H < 1.6f) {
+        // Близкая к квадрату плитка: эталонные блоки и так её заполняют.
+        if (H < 100) weather_low(p, d, x, y, w, h);
+        else weather_square(p, d, x, y, w, h);
+        return;
+    }
+    // Широкая: слева значок с температурой, справа описание и показатели.
+    int col = w / 2;
+    bool low = H < 100;
+    weather_row(d, x, y, col, h, H * (low ? 0.50f : 0.28f));
+    const char *lines[4];
+    int n = 0;
+    if (p->w_desc[0]) lines[n++] = p->w_desc;
+    if (low || !d->nmetrics) lines[n++] = d->extra;
+    else for (int i = 0; i < d->nmetrics && n < 4; i++) lines[n++] = d->metrics[i];
+    int lpx = 0;
+    const lv_font_t *lf = fit_font(false, low ? H * 0.17f : fminf(21, H * 0.11f), NULL, 0, &lpx);
+    float step = lpx * 1.45f, top = (H - step * (n - 1) - CAP * lpx) / 2 + CAP * lpx;
+    for (int i = 0; i < n; i++)
+        d_text_ellipsize(lf, K_DIM, x + col + PS(4), y + PS(top + i * step), 0,
+                         w - col - PS(16), lines[i]);
+}
+
 static void tile_clock(const pad_t *p, int x, int y, int w, int h)
 {
     clock_data_t d;
@@ -2878,15 +2983,20 @@ static void tile_clock(const pad_t *p, int x, int y, int w, int h)
     if (clipped) L->_clip_area = cl;
 
     if (p->clock_view == CLOCK_VIEW_CLOCK) {
-        if (h < PS(100)) clock_low(&d, x, y, w, h);
-        else clock_square(&d, x, y, w, h);
+        clock_fill(&d, x, y, w, h);
     } else if (p->clock_view == CLOCK_VIEW_WEATHER) {
-        if (h < PS(100)) weather_low(p, &d, x, y, w, h);
-        else weather_square(p, &d, x, y, w, h);
+        weather_fill(p, &d, x, y, w, h);
     } else if (h < PS(100)) {
+        // 2×0.5: часы и погода по полю 1×0.5. Узкая 1×0.5 делится так же,
+        // но блоки low там стали бы мелкими — время и строка погоды крупнее.
         int split = w / 2;
-        clock_low(&d, x, y, split, h);
-        weather_low(p, &d, x + split, y, w - split, h);
+        if (w < PS(260)) {
+            clock_fill(&d, x, y, split, h);
+            weather_fill(p, &d, x + split, y, w - split, h);
+        } else {
+            clock_low(&d, x, y, split, h);
+            weather_low(p, &d, x + split, y, w - split, h);
+        }
         d_line(x + split, y + PS(6), x + split, y + h - PS(6), PL(1), K_DIM, 50);
     } else {
         float ratio = (float)w / h;

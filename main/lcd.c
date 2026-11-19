@@ -141,6 +141,7 @@ static void st7701_init(void)
 static SemaphoreHandle_t s_bl_mux;
 static uint32_t s_bl_hz;        // частота, на которой сейчас работает таймер
 static bool s_bl_test;
+static bool s_bl_full;          // экран настройки Wi-Fi: QR-код виден при любой частоте
 static int s_bl_test_hz, s_bl_test_pct;
 static esp_timer_handle_t s_bl_test_timer;
 
@@ -182,7 +183,7 @@ static void bl_apply_locked(bool fade)
         duty = s_bl_test_pct >= 100 ? BL_FULL : (uint32_t)s_bl_test_pct * 1023 / 100;
     } else {
         bl_set_hz(bl_hz_fix(g_cfg.bl_hz));
-        duty = bl_duty(s_backlight_target, g_cfg.bl_min);
+        duty = s_bl_full ? BL_FULL : bl_duty(s_backlight_target, g_cfg.bl_min);
     }
     if (fade) {
         ledc_set_fade_time_and_start(BL_MODE, BL_CH, duty, 250, LEDC_FADE_NO_WAIT);
@@ -269,6 +270,16 @@ void lcd_bl_reapply(void)
     xSemaphoreGive(s_bl_mux);
 }
 
+void lcd_bl_force_full(bool on)
+{
+    xSemaphoreTake(s_bl_mux, portMAX_DELAY);
+    if (s_bl_full != on) {
+        s_bl_full = on;
+        if (s_frames && !s_bl_test) bl_apply_locked(true);
+    }
+    xSemaphoreGive(s_bl_mux);
+}
+
 void lcd_bl_state(lcd_bl_state_t *st)
 {
     xSemaphoreTake(s_bl_mux, portMAX_DELAY);
@@ -320,20 +331,36 @@ void ui_unlock(void)
     xSemaphoreGiveRecursive(s_lvgl_mux);
 }
 
-uint32_t lcd_frames(void)
+// ------------------------------------------------------------ режим вывода
+static lcd_mode_t s_mode;
+static esp_timer_handle_t s_mode_timer;
+
+// Пробный режим подтверждается, если за 30 с матрица вывела кадры: значит,
+// буферы выделились, а прошивка не упала из-за нехватки внутренней RAM.
+static void mode_confirm(void *arg)
 {
-    return s_frames;
+    if (s_mode.state != LCD_MODE_TRY) return;
+    if (s_frames < 3) {
+        ESP_LOGW(TAG, "режим %d МГц / %d строк не показал кадров - вернётся прежний",
+                 s_mode.mhz, s_mode.lines);
+        return;
+    }
+    settings_lcd_confirm(s_mode.mhz, s_mode.lines);
+    s_mode.confirmed = true;
+    ESP_LOGI(TAG, "режим %d МГц / %d строк подтверждён", s_mode.mhz, s_mode.lines);
 }
 
-esp_err_t lcd_init(void)
+void lcd_mode(lcd_mode_t *m)
 {
-    backlight_init();       // подсветка выключена до первого кадра
-    st7701_init();
+    *m = s_mode;
+}
 
+static esp_err_t new_panel(int mhz, int lines)
+{
     esp_lcd_rgb_panel_config_t cfg = {
         .clk_src = LCD_CLK_SRC_DEFAULT,
         .timings = {
-            .pclk_hz = LCD_PCLK_HZ,
+            .pclk_hz = mhz * 1000 * 1000,
             .h_res = LCD_H_RES,
             .v_res = LCD_V_RES,
             .hsync_pulse_width = LCD_HSYNC_PULSE,
@@ -347,7 +374,7 @@ esp_err_t lcd_init(void)
         .data_width = 16,
         .bits_per_pixel = 16,
         .num_fbs = 2,
-        .bounce_buffer_size_px = LCD_H_RES * 10,
+        .bounce_buffer_size_px = LCD_H_RES * lines,
         .dma_burst_size = 64,
         .hsync_gpio_num = PIN_LCD_HSYNC,
         .vsync_gpio_num = PIN_LCD_VSYNC,
@@ -357,7 +384,45 @@ esp_err_t lcd_init(void)
         .data_gpio_nums = LCD_DATA_PINS,
         .flags.fb_in_psram = 1,
     };
-    ESP_ERROR_CHECK(esp_lcd_new_rgb_panel(&cfg, &s_panel));
+    return esp_lcd_new_rgb_panel(&cfg, &s_panel);
+}
+
+uint32_t lcd_frames(void)
+{
+    return s_frames;
+}
+
+esp_err_t lcd_init(void)
+{
+    backlight_init();       // подсветка выключена до первого кадра
+    st7701_init();
+
+    int mhz, lines;
+    s_mode.state = settings_lcd_boot(&mhz, &lines);
+    esp_err_t err = new_panel(mhz, lines);
+    if (err != ESP_OK && s_mode.state == LCD_MODE_TRY) {
+        ESP_LOGE(TAG, "режим %d МГц / %d строк не запустился (%s) - беру проверенный",
+                 mhz, lines, esp_err_to_name(err));
+        s_mode.state = LCD_MODE_REVERTED;
+        mhz = g_cfg.lcd_mhz;
+        lines = g_cfg.lcd_lines;
+        err = new_panel(mhz, lines);
+    }
+    if (err != ESP_OK) {
+        mhz = LCD_PCLK_MHZ;
+        lines = LCD_BOUNCE_LINES;
+        ESP_ERROR_CHECK(new_panel(mhz, lines));
+    }
+    s_mode.mhz = mhz;
+    s_mode.lines = lines;
+    if (s_mode.state == LCD_MODE_TRY) {
+        const esp_timer_create_args_t a = {.callback = mode_confirm, .name = "lcd_mode"};
+        esp_timer_create(&a, &s_mode_timer);
+        esp_timer_start_once(s_mode_timer, 30 * 1000 * 1000);
+    }
+    ESP_LOGI(TAG, "вывод: PCLK %d МГц, bounce %d строк%s", mhz, lines,
+             s_mode.state == LCD_MODE_TRY ? " (проба, подтверждение через 30 с)"
+             : s_mode.state == LCD_MODE_REVERTED ? " (проба не удалась, прежний режим)" : "");
 
     s_frame_done = xSemaphoreCreateBinary();
     s_lvgl_mux = xSemaphoreCreateRecursiveMutex();

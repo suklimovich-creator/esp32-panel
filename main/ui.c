@@ -74,6 +74,7 @@ static lv_obj_t *button(lv_obj_t *parent, const char *text, int bg, int fg, lv_e
 
 static void show(lv_obj_t *scr)
 {
+    lcd_bl_force_full(scr == scr_setup);
     if (lv_screen_active() != scr) {
         camera_main_visible(scr == scr_main);
         lv_screen_load_anim(scr, LV_SCR_LOAD_ANIM_FADE_IN, 180, 0, false);
@@ -451,6 +452,7 @@ void ui_init(void)
     net_get_status(&ns);
     fill_setup(&ns);
     lv_screen_load(g_cfg.ssid[0] ? scr_main : scr_setup);
+    lcd_bl_force_full(!g_cfg.ssid[0]);
     camera_main_visible(g_cfg.ssid[0] != 0);
     lv_timer_create(refresh, 1000, NULL);
     refresh(NULL);

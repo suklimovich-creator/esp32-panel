@@ -52,6 +52,8 @@ void settings_load(void)
         if (nvs_get_u8(h, "bright", &g_cfg.bright) != ESP_OK) g_cfg.bright = DEF_BRIGHT;
         if (nvs_get_u32(h, "bl_hz", &g_cfg.bl_hz) != ESP_OK) g_cfg.bl_hz = LCD_BL_PWM_HZ;
         if (nvs_get_u8(h, "bl_min", &g_cfg.bl_min) != ESP_OK) g_cfg.bl_min = 0;
+        if (nvs_get_u8(h, "lcd_mhz", &g_cfg.lcd_mhz) != ESP_OK) g_cfg.lcd_mhz = LCD_PCLK_MHZ;
+        if (nvs_get_u8(h, "lcd_lines", &g_cfg.lcd_lines) != ESP_OK) g_cfg.lcd_lines = LCD_BOUNCE_LINES;
         nvs_close(h);
     } else {
         snprintf(g_cfg.fw_url, sizeof(g_cfg.fw_url), "%s", DEF_FW_URL);
@@ -60,6 +62,12 @@ void settings_load(void)
         snprintf(g_cfg.name, sizeof(g_cfg.name), "%s", def_name);
         g_cfg.bright = DEF_BRIGHT;
         g_cfg.bl_hz = LCD_BL_PWM_HZ;
+        g_cfg.lcd_mhz = LCD_PCLK_MHZ;
+        g_cfg.lcd_lines = LCD_BOUNCE_LINES;
+    }
+    if (!settings_lcd_valid(g_cfg.lcd_mhz, g_cfg.lcd_lines)) {
+        g_cfg.lcd_mhz = LCD_PCLK_MHZ;
+        g_cfg.lcd_lines = LCD_BOUNCE_LINES;
     }
     if (g_cfg.bright < 5) g_cfg.bright = 5;
     if (g_cfg.bl_hz < LCD_BL_HZ_MIN || g_cfg.bl_hz > LCD_BL_HZ_MAX) g_cfg.bl_hz = LCD_BL_PWM_HZ;
@@ -94,4 +102,61 @@ void settings_forget_wifi(void)
     g_cfg.ssid[0] = 0;
     g_cfg.pass[0] = 0;
     settings_save();
+}
+
+// ------------------------------------------------------------ режим матрицы
+bool settings_lcd_valid(int mhz, int lines)
+{
+    return mhz >= LCD_PCLK_MHZ_MIN && mhz <= LCD_PCLK_MHZ_MAX &&
+           lines >= 1 && lines <= LCD_BOUNCE_LINES_MAX && 480 % lines == 0;
+}
+
+// Состояние пробы в NVS: lcd_try = 1 - попробовать при старте, 2 - пробуем
+// (если старт застал 2, прошлая проба не дожила до подтверждения).
+lcd_mode_state_t settings_lcd_boot(int *mhz, int *lines)
+{
+    *mhz = g_cfg.lcd_mhz;
+    *lines = g_cfg.lcd_lines;
+    nvs_handle_t h;
+    if (nvs_open(NS, NVS_READWRITE, &h) != ESP_OK) return LCD_MODE_OK;
+    uint8_t st = 0, tm = 0, tl = 0;
+    nvs_get_u8(h, "lcd_try", &st);
+    lcd_mode_state_t res = LCD_MODE_OK;
+    if (st == 1 && nvs_get_u8(h, "lcd_try_mhz", &tm) == ESP_OK &&
+        nvs_get_u8(h, "lcd_try_lines", &tl) == ESP_OK && settings_lcd_valid(tm, tl)) {
+        nvs_set_u8(h, "lcd_try", 2);
+        *mhz = tm;
+        *lines = tl;
+        res = LCD_MODE_TRY;
+    } else if (st != 0) {
+        nvs_set_u8(h, "lcd_try", 0);
+        res = st == 2 ? LCD_MODE_REVERTED : LCD_MODE_OK;
+    }
+    nvs_commit(h);
+    nvs_close(h);
+    return res;
+}
+
+void settings_lcd_request(int mhz, int lines)
+{
+    nvs_handle_t h;
+    if (nvs_open(NS, NVS_READWRITE, &h) != ESP_OK) return;
+    nvs_set_u8(h, "lcd_try_mhz", mhz);
+    nvs_set_u8(h, "lcd_try_lines", lines);
+    nvs_set_u8(h, "lcd_try", 1);
+    nvs_commit(h);
+    nvs_close(h);
+}
+
+void settings_lcd_confirm(int mhz, int lines)
+{
+    g_cfg.lcd_mhz = mhz;
+    g_cfg.lcd_lines = lines;
+    nvs_handle_t h;
+    if (nvs_open(NS, NVS_READWRITE, &h) != ESP_OK) return;
+    nvs_set_u8(h, "lcd_mhz", mhz);
+    nvs_set_u8(h, "lcd_lines", lines);
+    nvs_set_u8(h, "lcd_try", 0);
+    nvs_commit(h);
+    nvs_close(h);
 }

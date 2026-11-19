@@ -314,6 +314,47 @@ static esp_err_t h_bl_save(httpd_req_t *req)
     return send_ok(req, true, "сохранено для этой панели");
 }
 
+// Вывод на матрицу: PCLK и размер bounce-буфера. Меняются только с
+// перезагрузкой; новый режим пробный, пока не покажет кадры 30 с.
+static esp_err_t h_display_get(httpd_req_t *req)
+{
+    lcd_mode_t m;
+    lcd_mode(&m);
+    cJSON *j = cJSON_CreateObject();
+    cJSON_AddNumberToObject(j, "mhz", m.mhz);
+    cJSON_AddNumberToObject(j, "lines", m.lines);
+    cJSON_AddStringToObject(j, "state", m.state == LCD_MODE_TRY ? (m.confirmed ? "confirmed" : "try")
+                                        : m.state == LCD_MODE_REVERTED ? "reverted" : "ok");
+    cJSON_AddNumberToObject(j, "saved_mhz", g_cfg.lcd_mhz);
+    cJSON_AddNumberToObject(j, "saved_lines", g_cfg.lcd_lines);
+    cJSON_AddNumberToObject(j, "default_mhz", LCD_PCLK_MHZ);
+    cJSON_AddNumberToObject(j, "default_lines", LCD_BOUNCE_LINES);
+    cJSON_AddNumberToObject(j, "frames", lcd_frames());
+    cJSON_AddNumberToObject(j, "int_free", heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
+    cJSON_AddNumberToObject(j, "int_min", heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL));
+    cJSON_AddNumberToObject(j, "int_block", heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA));
+#if CONFIG_SPIRAM_XIP_FROM_PSRAM
+    cJSON_AddBoolToObject(j, "xip_psram", true);
+#else
+    cJSON_AddBoolToObject(j, "xip_psram", false);
+#endif
+    return send_json(req, j);
+}
+
+// {"mhz":12,"lines":20} - попробовать после перезагрузки.
+static esp_err_t h_display_save(httpd_req_t *req)
+{
+    cJSON *j = read_json(req);
+    if (!j) return send_ok(req, false, "неверный запрос");
+    int mhz = json_int(j, "mhz", 0), lines = json_int(j, "lines", 0);
+    cJSON_Delete(j);
+    if (!settings_lcd_valid(mhz, lines)) return send_ok(req, false, "частота или число строк вне диапазона");
+    settings_lcd_request(mhz, lines);
+    ESP_LOGI(TAG, "вывод: проба %d МГц / %d строк после перезагрузки", mhz, lines);
+    reboot_later(1200);
+    return send_ok(req, true, "перезагружаюсь в новом режиме");
+}
+
 static esp_err_t h_ota_check(httpd_req_t *req)
 {
     ota_check_now();
@@ -339,7 +380,7 @@ void web_start(void)
 {
     httpd_config_t cfg = HTTPD_DEFAULT_CONFIG();
     cfg.stack_size = 8192;
-    cfg.max_uri_handlers = 16;
+    cfg.max_uri_handlers = 20;
     cfg.lru_purge_enable = true;
     cfg.recv_wait_timeout = 30;
     cfg.uri_match_fn = httpd_uri_match_wildcard;
@@ -362,6 +403,8 @@ void web_start(void)
         {.uri = "/api/backlight", .method = HTTP_GET, .handler = h_bl_get},
         {.uri = "/api/backlight", .method = HTTP_POST, .handler = h_bl_save},
         {.uri = "/api/backlight/test", .method = HTTP_POST, .handler = h_bl_test},
+        {.uri = "/api/display", .method = HTTP_GET, .handler = h_display_get},
+        {.uri = "/api/display", .method = HTTP_POST, .handler = h_display_save},
     };
     for (size_t i = 0; i < sizeof(uris) / sizeof(uris[0]); i++) {
         httpd_register_uri_handler(srv, &uris[i]);

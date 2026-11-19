@@ -4,12 +4,16 @@
 //   bl sweep <Гц>       - проход заполнения 100% -> 1% по 3 с на шаг
 //   bl off              - закончить пробу
 //   bl save <Гц> <мин%> - сохранить для этой панели
+//   lcd                 - режим вывода на матрицу и свободная внутренняя RAM
+//   lcd <МГц> <строк>   - попробовать режим (перезагрузка, откат при сбое)
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "driver/uart.h"
+#include "esp_heap_caps.h"
+#include "esp_system.h"
 #include "sdkconfig.h"
 #include "app.h"
 #include "board.h"
@@ -59,14 +63,43 @@ static void bl_sweep(int hz)
     printf("проход окончен\n");
 }
 
+static void lcd_cmd(int argc, char **argv)
+{
+    if (argc == 3) {
+        int mhz = atoi(argv[1]), lines = atoi(argv[2]);
+        if (!settings_lcd_valid(mhz, lines)) {
+            printf("частота %d..%d МГц, строк - делитель 480 до %d\n",
+                   LCD_PCLK_MHZ_MIN, LCD_PCLK_MHZ_MAX, LCD_BOUNCE_LINES_MAX);
+            return;
+        }
+        settings_lcd_request(mhz, lines);
+        printf("перезагрузка в режиме %d МГц / %d строк\n", mhz, lines);
+        vTaskDelay(pdMS_TO_TICKS(300));
+        esp_restart();
+    }
+    lcd_mode_t m;
+    lcd_mode(&m);
+    printf("вывод: %d МГц, %d строк (%s), проверенный %d МГц / %d строк\n", m.mhz, m.lines,
+           m.state == LCD_MODE_TRY ? (m.confirmed ? "проба подтверждена" : "проба")
+           : m.state == LCD_MODE_REVERTED ? "проба не удалась" : "проверенный",
+           g_cfg.lcd_mhz, g_cfg.lcd_lines);
+    printf("внутренняя RAM: свободно %u КБ, минимум %u КБ\n",
+           (unsigned)(heap_caps_get_free_size(MALLOC_CAP_INTERNAL) / 1024),
+           (unsigned)(heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL) / 1024));
+}
+
 static void run(char *line)
 {
     char *argv[4] = {0};
     int argc = 0;
     for (char *t = strtok(line, " \t"); t && argc < 4; t = strtok(NULL, " \t")) argv[argc++] = t;
     if (argc == 0) return;
+    if (strcmp(argv[0], "lcd") == 0) {
+        lcd_cmd(argc, argv);
+        return;
+    }
     if (strcmp(argv[0], "bl") != 0) {
-        printf("команды: bl | bl <Гц> <%%> | bl sweep <Гц> | bl off | bl save <Гц> <мин%%>\n");
+        printf("команды: bl | bl <Гц> <%%> | bl sweep <Гц> | bl off | bl save <Гц> <мин%%> | lcd | lcd <МГц> <строк>\n");
         return;
     }
     if (argc == 1) {

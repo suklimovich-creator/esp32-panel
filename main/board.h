@@ -6,7 +6,13 @@
 #define LCD_V_RES 480
 
 // 16 МГц с bounce-буферами: ~61 кадр/с по таймингам ниже (12 МГц давали ~46).
-#define LCD_PCLK_HZ (16 * 1000 * 1000)
+// PCLK и размер bounce-буфера - настройки панели (веб-страница, «Вывод на
+// матрицу»); здесь умолчания и допустимые границы.
+#define LCD_PCLK_MHZ 16
+#define LCD_PCLK_MHZ_MIN 8
+#define LCD_PCLK_MHZ_MAX 20
+#define LCD_BOUNCE_LINES 10     // строк в каждом из двух буферов; делитель 480
+#define LCD_BOUNCE_LINES_MAX 40
 #define LCD_HSYNC_PULSE 8
 #define LCD_HSYNC_BACK 20
 #define LCD_HSYNC_FRONT 10

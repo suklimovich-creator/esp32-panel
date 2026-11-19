@@ -20,6 +20,8 @@ typedef struct {
     uint8_t bright;     // яркость подсветки, %
     uint32_t bl_hz;     // частота ШИМ подсветки, Гц (0.12.3)
     uint8_t bl_min;     // нижняя граница заполнения подсветки, % (0.12.3)
+    uint8_t lcd_mhz;    // PCLK матрицы, МГц - проверенный (0.12.4)
+    uint8_t lcd_lines;  // строк в bounce-буфере - проверенный (0.12.4)
 } settings_t;
 
 extern settings_t g_cfg;
@@ -28,6 +30,14 @@ void settings_load(void);
 esp_err_t settings_save(void);
 void settings_forget_wifi(void);
 void settings_fix_url(char *url, size_t size);
+// Режим вывода на матрицу применяется только при старте. Новый сначала
+// пробуется: если панель не дожила до подтверждения, при следующем старте
+// вернётся прежний.
+typedef enum { LCD_MODE_OK, LCD_MODE_TRY, LCD_MODE_REVERTED } lcd_mode_state_t;
+lcd_mode_state_t settings_lcd_boot(int *mhz, int *lines);
+void settings_lcd_request(int mhz, int lines);  // попробовать при следующем старте
+void settings_lcd_confirm(int mhz, int lines);  // режим работает - сделать проверенным
+bool settings_lcd_valid(int mhz, int lines);
 
 void lv_mem_psram_link(void);       // память LVGL в PSRAM (lv_mem_psram.c)
 
@@ -48,6 +58,13 @@ esp_err_t lcd_bl_test(int hz, int pct);
 void lcd_bl_test_stop(void);
 void lcd_bl_reapply(void);          // после смены g_cfg.bl_hz / bl_min
 void lcd_bl_state(lcd_bl_state_t *st);
+void lcd_bl_force_full(bool on);    // экран настройки Wi-Fi: всегда 100%
+typedef struct {
+    int mhz, lines;     // в работе сейчас
+    lcd_mode_state_t state;
+    bool confirmed;     // пробный режим уже подтверждён
+} lcd_mode_t;
+void lcd_mode(lcd_mode_t *m);
 bool ui_lock(int timeout_ms);       // доступ к LVGL из других задач
 void ui_unlock(void);
 

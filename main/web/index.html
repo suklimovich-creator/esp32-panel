@@ -89,6 +89,27 @@ textarea{width:100%;min-height:260px;padding:10px 12px;border-radius:10px;border
 </section>
 
 <section>
+<h2>Вывод на матрицу</h2>
+<div class="msg" id="lcdst" style="margin:0"></div>
+<div class="msg" style="margin-top:6px">Если слева бегут чёрточки (рябь), подберите частоту пикселей и размер
+bounce-буфера. Порядок проб: 16 МГц / 20 строк, затем 16 / 30, затем 12 / 10 (как в ESPHome) и 12 / 20.
+Каждый вариант смотрите минуту-две, особенно на главном экране с камерой, и отметьте результат.
+Режим применяется с перезагрузкой. Если панель с ним не запустится или упадёт в первые 30 с, после следующей
+перезагрузки (сама или кнопкой) вернётся прежний. Каждые 10 строк буфера - около 19 КБ внутренней RAM.</div>
+<div class="row">
+<div><label for="lcdmhz">Частота пикселей</label><select id="lcdmhz"></select></div>
+<div><label for="lcdlines">Bounce-буфер</label><select id="lcdlines"></select></div>
+</div>
+<div class="btns">
+<button class="main" id="lcdapply">Применить и перезагрузить</button>
+<button id="lcdbad">Рябь есть</button>
+<button id="lcdgood">Ряби нет</button>
+</div>
+<table><thead><tr><th>Режим</th><th>Рябь</th><th>RAM мин.</th><th></th></tr></thead><tbody id="lcdres"></tbody></table>
+<div class="msg" id="lcdmsg"></div>
+</section>
+
+<section>
 <h2>Раскладка панели</h2>
 <div id="lsrc" class="msg" style="margin:0 0 8px"></div>
 <textarea id="layout" spellcheck="false"></textarea>
@@ -304,6 +325,49 @@ $('blsave').onclick = async () => {
   $('blhz').innerHTML = ''; $('blnow').textContent = ''; blLoad();
 };
 blTable(); blLoad(); setInterval(() => { if(!blRun) blLoad(); }, 5000);
+
+// ---- вывод на матрицу
+const LCD_MHZ = [10, 12, 14, 16, 18], LCD_LINES = [10, 20, 30, 40];
+let lcd = null, lcdRes = {};
+try{ lcdRes = JSON.parse(localStorage.getItem('lcd-results') || '{}'); }catch(e){}
+const kb = b => Math.round(b / 1024) + ' КБ';
+function lcdKey(){ return lcd ? lcd.mhz + ' МГц / ' + lcd.lines + ' строк' : null; }
+async function lcdLoad(){
+  try{
+    lcd = await (await fetch('/api/display')).json();
+    const st = {ok: 'проверенный', try: 'проба - ждёт подтверждения (30 с)', confirmed: 'проба подтверждена',
+      reverted: 'проба не удалась - вернулся прежний'}[lcd.state] || lcd.state;
+    $('lcdst').textContent = 'Сейчас: ' + lcdKey() + ' (' + st + ') · внутренняя RAM свободно ' + kb(lcd.int_free) +
+      ', минимум ' + kb(lcd.int_min) + ' · код ' + (lcd.xip_psram ? 'в PSRAM' : 'во flash');
+    $('lcdst').className = 'msg ' + (lcd.state === 'reverted' ? 'bad' : '');
+    if(!$('lcdmhz').options.length){
+      $('lcdmhz').innerHTML = [...new Set([...LCD_MHZ, lcd.mhz])].sort((a,b)=>a-b).map(m => '<option value="' + m + '">' + m + ' МГц' +
+        (m === lcd.default_mhz ? ' — по умолчанию' : '') + '</option>').join('');
+      $('lcdlines').innerHTML = [...new Set([...LCD_LINES, lcd.lines])].sort((a,b)=>a-b).map(l => '<option value="' + l + '">' + l + ' строк (' +
+        Math.round(l * 480 * 4 / 1024) + ' КБ)' + (l === lcd.default_lines ? ' — по умолчанию' : '') + '</option>').join('');
+      $('lcdmhz').value = lcd.mhz; $('lcdlines').value = lcd.lines;
+    }
+  }catch(e){ $('lcdst').textContent = 'нет ответа от экрана'; }
+}
+function lcdTable(){
+  const keys = Object.keys(lcdRes).sort();
+  $('lcdres').innerHTML = keys.map(k => '<tr><td>' + esc(k) + '</td><td class="' + (lcdRes[k].bad ? 'bad' : 'ok') + '">' +
+    (lcdRes[k].bad ? 'есть' : 'нет') + '</td><td>' + (lcdRes[k].min ? kb(lcdRes[k].min) : '') + '</td>' +
+    '<td><button data-del="' + esc(k) + '" style="padding:2px 8px">×</button></td></tr>').join('');
+  $('lcdres').querySelectorAll('button').forEach(b => b.onclick = () => { delete lcdRes[b.dataset.del]; lcdSaveRes(); });
+}
+function lcdSaveRes(){ localStorage.setItem('lcd-results', JSON.stringify(lcdRes)); lcdTable(); }
+function lcdMark(bad){ if(!lcd) return; lcdRes[lcdKey()] = {bad, min: lcd.int_min}; lcdSaveRes(); }
+$('lcdbad').onclick = () => lcdMark(true);
+$('lcdgood').onclick = () => lcdMark(false);
+$('lcdapply').onclick = async () => {
+  const body = {mhz: +$('lcdmhz').value, lines: +$('lcdlines').value};
+  try{
+    const r = await (await fetch('/api/display', {method:'POST', body: JSON.stringify(body)})).json();
+    say($('lcdmsg'), r.message + (r.ok ? ' - обновите страницу через 15 с' : ''), r.ok ? 'ok' : 'bad');
+  }catch(e){ say($('lcdmsg'), 'не удалось применить', 'bad'); }
+};
+lcdTable(); lcdLoad(); setInterval(lcdLoad, 5000);
 
 load(); loadLayout(); setInterval(load, 5000);
 </script>

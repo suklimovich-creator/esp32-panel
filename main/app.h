@@ -18,6 +18,8 @@ typedef struct {
     char panel_url[128]; // wb-svg-panel, откуда брать раскладку, с "/" в конце; пусто - не брать
     char name[32];      // имя устройства в сети
     uint8_t bright;     // яркость подсветки, %
+    uint32_t bl_hz;     // частота ШИМ подсветки, Гц (0.12.3)
+    uint8_t bl_min;     // нижняя граница заполнения подсветки, % (0.12.3)
 } settings_t;
 
 extern settings_t g_cfg;
@@ -34,6 +36,18 @@ esp_err_t lcd_init(void);           // матрица, подсветка, ди�
 void lcd_start(void);               // задача отрисовки LVGL
 void lcd_backlight(int percent);    // 0..100, плавно
 uint32_t lcd_frames(void);          // сколько кадров выведено с запуска
+// Подбор подсветки: проба задаёт частоту и прямое заполнение (без кривой и
+// нижней границы), не сохраняется и сама кончается через 20 с.
+typedef struct {
+    uint32_t hz;        // частота таймера сейчас
+    bool test;          // идёт проба
+    int test_hz, test_pct;
+    uint32_t duty;      // заполнение сейчас, из 1024
+} lcd_bl_state_t;
+esp_err_t lcd_bl_test(int hz, int pct);
+void lcd_bl_test_stop(void);
+void lcd_bl_reapply(void);          // после смены g_cfg.bl_hz / bl_min
+void lcd_bl_state(lcd_bl_state_t *st);
 bool ui_lock(int timeout_ms);       // доступ к LVGL из других задач
 void ui_unlock(void);
 
@@ -64,6 +78,7 @@ const char *net_reason_text(int reason);        // причина обрыва �
 
 // ---------------------------------------------------------------- web
 void web_start(void);
+void console_start(void);           // команды в мониторе порта (console.c)
 
 // ---------------------------------------------------------------- ota
 void ota_start(void);

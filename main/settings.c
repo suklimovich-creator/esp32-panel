@@ -1,10 +1,11 @@
-// Настройки в NVS: Wi-Fi, адреса сервера и брокера, имя, яркость.
+// Настройки в NVS: Wi-Fi, адреса сервера и брокера, имя, яркость и подсветка.
 #include <string.h>
 #include <stdio.h>
 #include "nvs.h"
 #include "esp_mac.h"
 #include "esp_log.h"
 #include "app.h"
+#include "board.h"
 
 static const char *TAG = "settings";
 static const char *NS = "panel";
@@ -49,6 +50,8 @@ void settings_load(void)
         get_str(h, "panel_url", g_cfg.panel_url, sizeof(g_cfg.panel_url), DEF_PANEL_URL);
         get_str(h, "name", g_cfg.name, sizeof(g_cfg.name), def_name);
         if (nvs_get_u8(h, "bright", &g_cfg.bright) != ESP_OK) g_cfg.bright = DEF_BRIGHT;
+        if (nvs_get_u32(h, "bl_hz", &g_cfg.bl_hz) != ESP_OK) g_cfg.bl_hz = LCD_BL_PWM_HZ;
+        if (nvs_get_u8(h, "bl_min", &g_cfg.bl_min) != ESP_OK) g_cfg.bl_min = 0;
         nvs_close(h);
     } else {
         snprintf(g_cfg.fw_url, sizeof(g_cfg.fw_url), "%s", DEF_FW_URL);
@@ -56,8 +59,11 @@ void settings_load(void)
         snprintf(g_cfg.panel_url, sizeof(g_cfg.panel_url), "%s", DEF_PANEL_URL);
         snprintf(g_cfg.name, sizeof(g_cfg.name), "%s", def_name);
         g_cfg.bright = DEF_BRIGHT;
+        g_cfg.bl_hz = LCD_BL_PWM_HZ;
     }
     if (g_cfg.bright < 5) g_cfg.bright = 5;
+    if (g_cfg.bl_hz < LCD_BL_HZ_MIN || g_cfg.bl_hz > LCD_BL_HZ_MAX) g_cfg.bl_hz = LCD_BL_PWM_HZ;
+    if (g_cfg.bl_min > 60) g_cfg.bl_min = 60;
     // Адреса папок всегда с "/" в конце: к ним приклеиваются имена файлов.
     settings_fix_url(g_cfg.fw_url, sizeof(g_cfg.fw_url));
     settings_fix_url(g_cfg.panel_url, sizeof(g_cfg.panel_url));
@@ -76,6 +82,8 @@ esp_err_t settings_save(void)
     nvs_set_str(h, "panel_url", g_cfg.panel_url);
     nvs_set_str(h, "name", g_cfg.name);
     nvs_set_u8(h, "bright", g_cfg.bright);
+    nvs_set_u32(h, "bl_hz", g_cfg.bl_hz);
+    nvs_set_u8(h, "bl_min", g_cfg.bl_min);
     err = nvs_commit(h);
     nvs_close(h);
     return err;

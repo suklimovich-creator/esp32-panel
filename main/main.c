@@ -42,6 +42,7 @@ void app_main(void)
 
     net_start();
     web_start();
+    console_start();
     mq_start();
     layout_sync_start();
     theme_sync_start();

@@ -25,6 +25,10 @@ button:disabled{opacity:.5}
 .msg{margin-top:10px;min-height:1.2em;color:var(--dim)}
 .ok{color:var(--ok)}.bad{color:var(--bad)}
 progress{width:100%;height:8px;margin-top:10px;accent-color:var(--acc)}
+table{width:100%;border-collapse:collapse;margin-top:10px;font-size:14px}
+th,td{text-align:left;padding:5px 6px;border-bottom:1px solid var(--line)}th{color:var(--dim);font-weight:500}
+input[type=range]{padding:0;accent-color:var(--acc)}input[type=checkbox]{width:auto}
+.big{font-size:20px;font-weight:600;margin-top:8px}
 textarea{width:100%;min-height:260px;padding:10px 12px;border-radius:10px;border:1px solid var(--line);background:#101218;color:var(--text);font:12px/1.45 ui-monospace,Consolas,monospace;resize:vertical}
 </style>
 </head>
@@ -55,6 +59,33 @@ textarea{width:100%;min-height:260px;padding:10px 12px;border-radius:10px;border
 <input id="purl" placeholder="http://192.168.1.77/panel/ - пусто, чтобы не брать">
 <div class="btns"><button class="main" id="save">Сохранить и перезагрузить</button></div>
 <div class="msg" id="smsg"></div>
+</section>
+
+<section>
+<h2>Подсветка</h2>
+<div class="msg" id="blst" style="margin:0"></div>
+<div class="msg" style="margin-top:6px">Драйвер подсветки на платах разных партий по-разному принимает частоту ШИМ.
+Подбор: выберите частоту, нажмите «Пройти уровни» и, когда экран погаснет или замерцает, нажмите «Погасло».
+Мерцание видно через камеру телефона (бегут полосы); писк слышно вблизи экрана. Повторите для нескольких частот.
+Проба не сохраняется и сама кончается через 20 с.</div>
+<label for="blhz">Частота</label>
+<select id="blhz"></select>
+<label for="blpct">Заполнение: <span id="blpv">—</span></label>
+<input id="blpct" type="range" min="0" max="100" value="50">
+<div class="big" id="blnow"></div>
+<div class="btns">
+<button class="main" id="blsweep">Пройти уровни</button>
+<button id="bldark" disabled>Погасло / мерцает</button>
+<button id="bloff">Вернуть сохранённое</button>
+</div>
+<table><thead><tr><th>Частота</th><th>Светит от</th><th>Писк</th><th></th></tr></thead><tbody id="blres"></tbody></table>
+<div class="msg" id="blrec"></div>
+<div class="row" style="margin-top:8px">
+<div><label for="blshz">Частота, Гц</label><input id="blshz" type="number" min="100" max="40000"></div>
+<div><label for="blsmin">Нижняя граница, %</label><input id="blsmin" type="number" min="0" max="60"></div>
+</div>
+<div class="btns"><button class="main" id="blsave">Сохранить для этой панели</button></div>
+<div class="msg" id="blmsg"></div>
 </section>
 
 <section>
@@ -201,6 +232,78 @@ $('reboot').onclick = async () => {
   await fetch('/api/reboot', {method:'POST'});
   say($('umsg'), 'перезагрузка…');
 };
+
+// ---------------------------------------------------------------- подсветка
+const BL_HZ = [150, 300, 500, 1000, 2000, 5000, 10000, 15000, 20000, 25000, 30000];
+const BL_STEPS = [100, 80, 60, 50, 40, 30, 25, 20, 15, 10, 7, 5, 3, 2, 1];
+let bl = null, blRun = null, blRes = {};
+try{ blRes = JSON.parse(localStorage.getItem('bl-results') || '{}'); }catch(e){}
+function blHz(){ return +$('blhz').value; }
+async function blTest(pct){
+  $('blpv').textContent = pct + '%'; $('blnow').textContent = blHz() + ' Гц · ' + pct + '%';
+  try{ await fetch('/api/backlight/test', {method:'POST', body: JSON.stringify({hz: blHz(), pct})}); }catch(e){}
+}
+async function blLoad(){
+  try{
+    bl = await (await fetch('/api/backlight')).json();
+    $('blst').textContent = 'Сохранено: ' + bl.hz + ' Гц, нижняя граница ' + bl.min + '%, яркость ' + bl.bright +
+      '% · сейчас ' + bl.now_hz + ' Гц, заполнение ' + Math.round(bl.duty * 100 / 1024) + '%' + (bl.test ? ' (проба)' : '');
+    if(!$('blhz').options.length){
+      const list = [...new Set([...BL_HZ, bl.hz, bl.default_hz])].sort((a,b)=>a-b);
+      $('blhz').innerHTML = list.map(h => '<option value="' + h + '">' + h + ' Гц' +
+        (h === bl.hz ? ' — сохранено' : h === bl.default_hz ? ' — по умолчанию' : '') + '</option>').join('');
+      $('blhz').value = bl.hz; $('blshz').value = bl.hz; $('blsmin').value = bl.min;
+    }
+  }catch(e){ $('blst').textContent = 'нет ответа от экрана'; }
+}
+function blSaveRes(){ localStorage.setItem('bl-results', JSON.stringify(blRes)); blTable(); }
+function blTable(){
+  const hz = Object.keys(blRes).map(Number).sort((a,b)=>a-b);
+  $('blres').innerHTML = hz.map(h => { const r = blRes[h];
+    return '<tr><td>' + h + ' Гц</td><td>' + (r.low >= 100 ? 'только 100% — не годится' : r.low + '%') + '</td>' +
+      '<td><input type="checkbox" data-hz="' + h + '"' + (r.whine ? ' checked' : '') + '></td>' +
+      '<td><button data-del="' + h + '" style="padding:2px 8px">×</button></td></tr>'; }).join('');
+  $('blres').querySelectorAll('input').forEach(c => c.onchange = () => { blRes[c.dataset.hz].whine = c.checked; blSaveRes(); });
+  $('blres').querySelectorAll('button').forEach(b => b.onclick = () => { delete blRes[b.dataset.del]; blSaveRes(); });
+  // Лучшая: без писка, светит с самого низкого уровня; при равенстве - выше частота (дальше от слышимого).
+  const ok = hz.filter(h => blRes[h].low < 100 && !blRes[h].whine)
+    .sort((a,b) => blRes[a].low - blRes[b].low || b - a);
+  if(!ok.length){ $('blrec').textContent = hz.length ? 'Пока нет частоты, на которой подсветка регулируется без писка.' : ''; return; }
+  const best = ok[0], min = Math.min(60, blRes[best].low + 3);
+  $('blrec').innerHTML = 'Рекомендуем: <b>' + best + ' Гц</b>, нижняя граница <b>' + min + '%</b> (светит от ' +
+    blRes[best].low + '% плюс запас 3%).';
+  $('blshz').value = best; $('blsmin').value = min;
+}
+function blStop(){ if(blRun){ clearTimeout(blRun.t); blRun = null; } $('bldark').disabled = true; $('blsweep').disabled = false; }
+$('blpct').oninput = () => { blStop(); clearTimeout(blTest.t); const v = +$('blpct').value; blTest.t = setTimeout(() => blTest(v), 120); };
+$('blhz').onchange = () => { blStop(); blTest(+$('blpct').value); };
+$('blsweep').onclick = () => {
+  blStop(); blRun = {i: 0, hz: blHz()}; $('bldark').disabled = false; $('blsweep').disabled = true;
+  const step = () => {
+    if(blRun.i >= BL_STEPS.length){ blRes[blRun.hz] = Object.assign(blRes[blRun.hz] || {}, {low: 1}); blStop(); blSaveRes(); blOff(); return; }
+    const v = BL_STEPS[blRun.i++]; $('blpct').value = v; blTest(v); blRun.t = setTimeout(step, 3000);
+  };
+  step();
+};
+$('bldark').onclick = () => {
+  if(!blRun) return;
+  // Погасло на текущем шаге - значит, светит с предыдущего.
+  const low = blRun.i >= 2 ? BL_STEPS[blRun.i - 2] : 100;
+  blRes[blRun.hz] = Object.assign(blRes[blRun.hz] || {}, {low});
+  blStop(); blSaveRes(); blOff();
+};
+async function blOff(){ blStop(); await fetch('/api/backlight/test', {method:'POST', body: '{"stop":true}'}); $('blnow').textContent = ''; blLoad(); }
+$('bloff').onclick = blOff;
+$('blsave').onclick = async () => {
+  blStop();
+  const body = {hz: +$('blshz').value, min: +$('blsmin').value};
+  try{
+    const r = await (await fetch('/api/backlight', {method:'POST', body: JSON.stringify(body)})).json();
+    say($('blmsg'), r.message, r.ok ? 'ok' : 'bad');
+  }catch(e){ say($('blmsg'), 'не удалось сохранить', 'bad'); }
+  $('blhz').innerHTML = ''; $('blnow').textContent = ''; blLoad();
+};
+blTable(); blLoad(); setInterval(() => { if(!blRun) blLoad(); }, 5000);
 
 load(); loadLayout(); setInterval(load, 5000);
 </script>

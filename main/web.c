@@ -1,4 +1,4 @@
-// Веб-страница экрана: состояние, настройка Wi-Fi и адресов, загрузка прошивки.
+// Веб-страница экрана: состояние, настройка Wi-Fi и адресов, подсветка, загрузка прошивки.
 #include <string.h>
 #include <stdio.h>
 #include "freertos/FreeRTOS.h"
@@ -12,6 +12,7 @@
 #include "esp_log.h"
 #include "cJSON.h"
 #include "app.h"
+#include "board.h"
 
 static const char *TAG = "web";
 
@@ -236,6 +237,83 @@ static esp_err_t h_layout_reset(httpd_req_t *req)
     return send_ok(req, true, "ручная раскладка удалена - будет с сервера или встроенная, перезагрузка");
 }
 
+// ------------------------------------------------------------ подсветка
+static cJSON *read_json(httpd_req_t *req)
+{
+    if (req->content_len <= 0 || req->content_len > 512) return NULL;
+    char buf[513];
+    int got = 0;
+    while (got < req->content_len) {
+        int r = httpd_req_recv(req, buf + got, req->content_len - got);
+        if (r == HTTPD_SOCK_ERR_TIMEOUT) continue;
+        if (r <= 0) return NULL;
+        got += r;
+    }
+    buf[got] = 0;
+    return cJSON_Parse(buf);
+}
+
+static int json_int(const cJSON *j, const char *key, int def)
+{
+    const cJSON *v = cJSON_GetObjectItem(j, key);
+    return cJSON_IsNumber(v) ? v->valueint : def;
+}
+
+static esp_err_t h_bl_get(httpd_req_t *req)
+{
+    lcd_bl_state_t st;
+    lcd_bl_state(&st);
+    cJSON *j = cJSON_CreateObject();
+    cJSON_AddNumberToObject(j, "hz", g_cfg.bl_hz);
+    cJSON_AddNumberToObject(j, "min", g_cfg.bl_min);
+    cJSON_AddNumberToObject(j, "bright", g_cfg.bright);
+    cJSON_AddNumberToObject(j, "now_hz", st.hz);
+    cJSON_AddNumberToObject(j, "duty", st.duty);
+    cJSON_AddBoolToObject(j, "test", st.test);
+    cJSON_AddNumberToObject(j, "test_hz", st.test_hz);
+    cJSON_AddNumberToObject(j, "test_pct", st.test_pct);
+    cJSON_AddNumberToObject(j, "default_hz", LCD_BL_PWM_HZ);
+    cJSON_AddNumberToObject(j, "hz_min", LCD_BL_HZ_MIN);
+    cJSON_AddNumberToObject(j, "hz_max", LCD_BL_HZ_MAX);
+    return send_json(req, j);
+}
+
+// Проба: {"hz":1000,"pct":40} или {"stop":true}. Не сохраняется.
+static esp_err_t h_bl_test(httpd_req_t *req)
+{
+    cJSON *j = read_json(req);
+    if (!j) return send_ok(req, false, "неверный запрос");
+    bool stop = cJSON_IsTrue(cJSON_GetObjectItem(j, "stop"));
+    int hz = json_int(j, "hz", 0), pct = json_int(j, "pct", -1);
+    cJSON_Delete(j);
+    if (stop) {
+        lcd_bl_test_stop();
+        return send_ok(req, true, "проба окончена");
+    }
+    if (lcd_bl_test(hz, pct) != ESP_OK) return send_ok(req, false, "частота или заполнение вне диапазона");
+    return send_ok(req, true, NULL);
+}
+
+// Сохранить для этой панели: {"hz":1000,"min":8}. Без перезагрузки.
+static esp_err_t h_bl_save(httpd_req_t *req)
+{
+    cJSON *j = read_json(req);
+    if (!j) return send_ok(req, false, "неверный запрос");
+    int hz = json_int(j, "hz", 0), min = json_int(j, "min", -1);
+    cJSON_Delete(j);
+    if (hz < LCD_BL_HZ_MIN || hz > LCD_BL_HZ_MAX || min < 0 || min > 60) {
+        return send_ok(req, false, "частота или нижняя граница вне диапазона");
+    }
+    g_cfg.bl_hz = hz;
+    g_cfg.bl_min = min;
+    esp_err_t err = settings_save();
+    if (err != ESP_OK) return send_ok(req, false, esp_err_to_name(err));
+    lcd_bl_test_stop();
+    lcd_bl_reapply();
+    ESP_LOGI(TAG, "подсветка сохранена: %d Гц, нижняя граница %d%%", hz, min);
+    return send_ok(req, true, "сохранено для этой панели");
+}
+
 static esp_err_t h_ota_check(httpd_req_t *req)
 {
     ota_check_now();
@@ -281,6 +359,9 @@ void web_start(void)
         {.uri = "/api/layout", .method = HTTP_GET, .handler = h_layout_get},
         {.uri = "/api/layout", .method = HTTP_POST, .handler = h_layout_put},
         {.uri = "/api/layout/reset", .method = HTTP_POST, .handler = h_layout_reset},
+        {.uri = "/api/backlight", .method = HTTP_GET, .handler = h_bl_get},
+        {.uri = "/api/backlight", .method = HTTP_POST, .handler = h_bl_save},
+        {.uri = "/api/backlight/test", .method = HTTP_POST, .handler = h_bl_test},
     };
     for (size_t i = 0; i < sizeof(uris) / sizeof(uris[0]); i++) {
         httpd_register_uri_handler(srv, &uris[i]);

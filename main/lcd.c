@@ -128,16 +128,91 @@ static void st7701_init(void)
 }
 
 // ------------------------------------------------------------ backlight
+// Драйвер подсветки на платах разных партий по-разному принимает ШИМ: часть
+// не запускается на 20 кГц и светит только при 100%. Поэтому частота и
+// нижняя граница - настройки панели (NVS), а для их подбора есть проба:
+// временный режим с прямым заполнением, который сам кончается через 20 с.
 #define BL_MODE LEDC_LOW_SPEED_MODE
 #define BL_CH LEDC_CHANNEL_0
+#define BL_TIMER LEDC_TIMER_0
+#define BL_FULL 1024            // 10 бит: 1024 - постоянная единица на выводе
+#define BL_TEST_US (20 * 1000 * 1000)
+
+static SemaphoreHandle_t s_bl_mux;
+static uint32_t s_bl_hz;        // частота, на которой сейчас работает таймер
+static bool s_bl_test;
+static int s_bl_test_hz, s_bl_test_pct;
+static esp_timer_handle_t s_bl_test_timer;
+
+static uint32_t bl_hz_fix(uint32_t hz)
+{
+    if (hz < LCD_BL_HZ_MIN || hz > LCD_BL_HZ_MAX) return LCD_BL_PWM_HZ;
+    return hz;
+}
+
+static void bl_set_hz(uint32_t hz)
+{
+    if (hz == s_bl_hz) return;
+    ledc_fade_stop(BL_MODE, BL_CH);
+    if (ledc_set_freq(BL_MODE, BL_TIMER, hz) == ESP_OK) {
+        s_bl_hz = hz;
+    } else {
+        ESP_LOGW(TAG, "подсветка: частота %u Гц не встала", (unsigned)hz);
+    }
+}
+
+// Яркость (%) в заполнение. Глаз воспринимает яркость нелинейно: квадрат
+// даёт ровную шкалу; нижняя граница min_pct поднимает ноль шкалы для
+// драйверов, которые гаснут на малом заполнении.
+static uint32_t bl_duty(int percent, int min_pct)
+{
+    if (percent <= 0) return 0;
+    if (percent >= 100) return BL_FULL;
+    float f = min_pct / 100.0f;
+    float d = f + (1.0f - f) * (float)(percent * percent) / 10000.0f;
+    uint32_t duty = (uint32_t)(d * 1023.0f);
+    return duty ? duty : 1;
+}
+
+static void bl_apply_locked(bool fade)
+{
+    uint32_t duty;
+    if (s_bl_test) {
+        bl_set_hz(s_bl_test_hz);
+        duty = s_bl_test_pct >= 100 ? BL_FULL : (uint32_t)s_bl_test_pct * 1023 / 100;
+    } else {
+        bl_set_hz(bl_hz_fix(g_cfg.bl_hz));
+        duty = bl_duty(s_backlight_target, g_cfg.bl_min);
+    }
+    if (fade) {
+        ledc_set_fade_time_and_start(BL_MODE, BL_CH, duty, 250, LEDC_FADE_NO_WAIT);
+    } else {
+        ledc_fade_stop(BL_MODE, BL_CH);
+        ledc_set_duty_and_update(BL_MODE, BL_CH, duty, 0);
+    }
+}
+
+static void bl_test_end(void *arg)
+{
+    xSemaphoreTake(s_bl_mux, portMAX_DELAY);
+    if (s_bl_test) {
+        s_bl_test = false;
+        if (s_frames) bl_apply_locked(true);
+        ESP_LOGI(TAG, "подсветка: проба окончена, %u Гц, нижняя граница %d%%",
+                 (unsigned)s_bl_hz, g_cfg.bl_min);
+    }
+    xSemaphoreGive(s_bl_mux);
+}
 
 static void backlight_init(void)
 {
+    s_bl_mux = xSemaphoreCreateMutex();
+    s_bl_hz = bl_hz_fix(g_cfg.bl_hz);
     ledc_timer_config_t t = {
         .speed_mode = BL_MODE,
         .duty_resolution = LEDC_TIMER_10_BIT,
-        .timer_num = LEDC_TIMER_0,
-        .freq_hz = 20000,
+        .timer_num = BL_TIMER,
+        .freq_hz = s_bl_hz,
         .clk_cfg = LEDC_AUTO_CLK,
     };
     ESP_ERROR_CHECK(ledc_timer_config(&t));
@@ -145,25 +220,64 @@ static void backlight_init(void)
         .gpio_num = PIN_LCD_BL,
         .speed_mode = BL_MODE,
         .channel = BL_CH,
-        .timer_sel = LEDC_TIMER_0,
+        .timer_sel = BL_TIMER,
         .duty = 0,
     };
     ESP_ERROR_CHECK(ledc_channel_config(&c));
     ledc_fade_func_install(0);
+    const esp_timer_create_args_t a = {.callback = bl_test_end, .name = "bl_test"};
+    esp_timer_create(&a, &s_bl_test_timer);
+    ESP_LOGI(TAG, "подсветка: %u Гц, нижняя граница %d%%", (unsigned)s_bl_hz, g_cfg.bl_min);
 }
 
 void lcd_backlight(int percent)
 {
     if (percent < 0) percent = 0;
     if (percent > 100) percent = 100;
+    xSemaphoreTake(s_bl_mux, portMAX_DELAY);
     s_backlight_target = percent;
-    if (s_frames == 0) {
-        return;     // включим после первого готового кадра
-    }
-    // Глаз воспринимает яркость нелинейно: квадрат даёт ровную шкалу.
-    uint32_t duty = (uint32_t)(percent * percent) * 1023 / 10000;
-    if (percent > 0 && duty == 0) duty = 1;
-    ledc_set_fade_time_and_start(BL_MODE, BL_CH, duty, 250, LEDC_FADE_NO_WAIT);
+    // До первого готового кадра не включаем; во время пробы - не мешаем ей.
+    if (s_frames && !s_bl_test) bl_apply_locked(true);
+    xSemaphoreGive(s_bl_mux);
+}
+
+esp_err_t lcd_bl_test(int hz, int pct)
+{
+    if (hz < LCD_BL_HZ_MIN || hz > LCD_BL_HZ_MAX || pct < 0 || pct > 100) return ESP_ERR_INVALID_ARG;
+    xSemaphoreTake(s_bl_mux, portMAX_DELAY);
+    s_bl_test = true;
+    s_bl_test_hz = hz;
+    s_bl_test_pct = pct;
+    bl_apply_locked(false);
+    esp_timer_stop(s_bl_test_timer);
+    esp_timer_start_once(s_bl_test_timer, BL_TEST_US);
+    xSemaphoreGive(s_bl_mux);
+    ESP_LOGI(TAG, "подсветка: проба %d Гц, заполнение %d%%", hz, pct);
+    return ESP_OK;
+}
+
+void lcd_bl_test_stop(void)
+{
+    esp_timer_stop(s_bl_test_timer);
+    bl_test_end(NULL);
+}
+
+void lcd_bl_reapply(void)
+{
+    xSemaphoreTake(s_bl_mux, portMAX_DELAY);
+    if (s_frames && !s_bl_test) bl_apply_locked(true);
+    xSemaphoreGive(s_bl_mux);
+}
+
+void lcd_bl_state(lcd_bl_state_t *st)
+{
+    xSemaphoreTake(s_bl_mux, portMAX_DELAY);
+    st->hz = s_bl_hz;
+    st->test = s_bl_test;
+    st->test_hz = s_bl_test_hz;
+    st->test_pct = s_bl_test_pct;
+    st->duty = ledc_get_duty(BL_MODE, BL_CH);
+    xSemaphoreGive(s_bl_mux);
 }
 
 // ------------------------------------------------------------ LVGL glue
@@ -184,7 +298,7 @@ static void flush_cb(lv_display_t *disp, const lv_area_t *area, uint8_t *px)
         // Ждём, пока матрица дочитает прежний кадр: в него LVGL рисует дальше.
         xSemaphoreTake(s_frame_done, pdMS_TO_TICKS(100));
         if (++s_frames == 1 && s_backlight_target >= 0) {
-            lcd_backlight(s_backlight_target);
+            lcd_bl_reapply();
         }
     }
     lv_display_flush_ready(disp);

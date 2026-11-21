@@ -1607,7 +1607,7 @@ static forecast_scale_t forecast_scale(float lo, float hi)
     return sc;
 }
 
-// Подписи осей занимают отдельные поля; внутри остаются только данные.
+// На плитке подписи внутри графика, как в wb-svg-panel; в пульте — снаружи.
 static bool forecast_graph(const pad_t *p, float X0, float X1, float Y0, float Y1,
                            const lv_font_t *font, float scale, bool compact)
 {
@@ -1621,17 +1621,6 @@ static bool forecast_graph(const pad_t *p, float X0, float X1, float Y0, float Y
     forecast_scale_t sc = forecast_scale(lo, hi);
     int divisions = sc.divisions;
     float step = sc.step, grid_lo = sc.lo, grid_hi = sc.hi;
-    // Поле под шкалу определяется её текстом, а не фиксированными 42 px.
-    if (compact) {
-        char label[32];
-        int width = 0;
-        for (int i = 0; i <= divisions; i++) {
-            snprintf(label, sizeof(label), "%.*f", sc.digits, grid_lo + step * i);
-            int tw = text_w(font, label);
-            if (tw > width) width = tw;
-        }
-        X0 += width + 6 * scale;
-    }
     if (X1 - X0 < 20 * scale) return false;
     float xstep = (X1 - X0) / (n - 1);
     char b[48];
@@ -1652,13 +1641,6 @@ static bool forecast_graph(const pad_t *p, float X0, float X1, float Y0, float Y
     for (int i = 0; i <= divisions; i++) {
         float yy = Y1 - (Y1 - Y0) * i / divisions;
         d_line(X0, yy, X1, yy, scale, K_INK, 42);
-        int stride = (int)ceilf((font->line_height + 2 * scale) * divisions / (Y1 - Y0));
-        if (stride < 1) stride = 1;
-        if (i != divisions && i % stride) continue;
-        if (i != 0 && i != divisions && divisions - i < stride) continue;
-        snprintf(b, sizeof(b), "%.*f", sc.digits, grid_lo + step * i);
-        d_text(font, K_DIM, LV_OPA_COVER, X0 - 5 * scale,
-               yy + (font->line_height - font->base_line) * 0.35f, 2, b);
     }
     float prevx = 0, prevy = 0;
     bool previous = false;
@@ -1672,9 +1654,31 @@ static bool forecast_graph(const pad_t *p, float X0, float X1, float Y0, float Y
             d_circle(xx, yy, 2.4f * scale, p->s_t[i] == hi ? 0xC4553B : 0x3B8FD4, LV_OPA_COVER);
         prevx = xx; prevy = yy; previous = true;
     }
+    // Подписи поверх кривой; небольшая подложка сохраняет читаемость
+    // в местах пересечения. Нижняя температура резервирует место перед часами.
+    float bottom_right = X0 - 6 * scale;
+    float last_top = Y1 + font->line_height;
+    float ascent = font->line_height - font->base_line;
+    for (int i = 0; i <= divisions; i++) {
+        float yy = Y1 - (Y1 - Y0) * i / divisions;
+        float base = compact ? fmaxf(Y0 + ascent, yy - 3 * scale)
+                             : yy + ascent * 0.35f;
+        if (base + font->base_line + 2 * scale > last_top) continue;
+        snprintf(b, sizeof(b), "%.*f", sc.digits, grid_lo + step * i);
+        if (compact) {
+            float left = X0 + 5 * scale, tw = text_w(font, b);
+            d_rect(left - scale, base - ascent, tw + 2 * scale,
+                   font->line_height, 2 * scale, K_BG, 210);
+            d_text(font, K_DIM, LV_OPA_COVER, left, base, 0, b);
+            if (!i) bottom_right = left + tw;
+        } else {
+            d_text(font, K_DIM, LV_OPA_COVER, X0 - 5 * scale, base, 2, b);
+        }
+        last_top = base - ascent;
+    }
     // Короткие часы, как у chart; отсев по измеренной ширине подписи.
     int hour_step = n >= 9 ? 3 : 2;
-    float last_right = X0 - 6 * scale;
+    float last_right = compact ? bottom_right : X0 - 6 * scale;
     for (int i = 0; i < n; i++) {
         int hh = p->start_hour >= 0 ? (p->start_hour + i) % 24 : i;
         if (i && hh % hour_step) continue;
@@ -1682,7 +1686,10 @@ static bool forecast_graph(const pad_t *p, float X0, float X1, float Y0, float Y
         float xx = X0 + xstep * i, tw = text_w(font, b);
         float left = clampf(xx - tw / 2, X0, X1 - tw);
         if (left < last_right + 5 * scale) continue;
-        d_text(font, K_DIM, LV_OPA_COVER, left, Y1 + 15 * scale, 0, b);
+        float base = compact ? Y1 - 3 * scale : Y1 + 15 * scale;
+        if (compact) d_rect(left - scale, base - ascent, tw + 2 * scale,
+                            font->line_height, 2 * scale, K_BG, 210);
+        d_text(font, K_DIM, LV_OPA_COVER, left, base, 0, b);
         last_right = left + tw;
         if (!compact && i < p->n_code)
             wmo_weather_icon(p->s_code[i], xx, Y0 - 17 * scale, 9 * scale, K_DIM);
@@ -2980,13 +2987,18 @@ static void tile_weather(const pad_t *p, int x, int y, int w, int h)
     if (d.icon) d_icon(d.icon, x + PS(30), y + PS(30), PS(30), PL(2), K_INK, LV_OPA_COVER);
     d_text(tf, K_INK, LV_OPA_COVER, x + w - PS(12), y + PS(38), 2, d.temp);
     d_text_ellipsize(tile_font(false, 15), K_DIM, x + PS(12), y + PS(low ? 52 : 60), 0, w - PS(24), p->w_desc);
-    bool graph = forecast_graph(p, x + PS(8), x + w - PS(12), y + PS(low ? 68 : 78),
-                                y + h - PS(low ? 40 : 56), tile_font(false, 10), s_tile_scale, true);
+    bool graph = forecast_graph(p, x + PS(1), x + w - PS(2), y + PS(low ? 64 : 72),
+                                y + h - PS(28), tile_font(false, 10), s_tile_scale, true);
     if (!graph)
         d_text_ellipsize(P_F12, K_DIM, x + w / 2, y + h / 2 + PS(22), 1,
                          w - PS(24), "Прогноз пока не получен");
-    d_text_ellipsize(P_F12, K_DIM, x + w / 2, y + h - PS(low ? 5 : 20), 1, w - PS(24), d.extra);
-    if (!low) d_text_ellipsize(P_F13, K_INK, x + w / 2, y + h - PS(5), 1, w - PS(24), p->title ? p->title : "");
+    const char *title = p->title && p->title[0] ? p->title : "Погода";
+    int title_w = text_w(P_F13, title);
+    if (title_w > w * 0.32f) title_w = (int)(w * 0.32f);
+    int extra_w = w - PS(24) - title_w - PS(10);
+    const lv_font_t *ef = fit_font(false, 12, d.extra, extra_w, NULL);
+    d_text_ellipsize(P_F13, K_INK, x + PS(12), y + h - PS(9), 0, title_w, title);
+    d_text_ellipsize(ef, K_DIM, x + w - PS(12), y + h - PS(9), 2, extra_w, d.extra);
     L->_clip_area = old;
 }
 

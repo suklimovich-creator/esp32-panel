@@ -219,10 +219,10 @@ static void fonts(void)
 }
 
 static const struct { bool bold; int px; } TILE_FONTS[] = {
-    {false, 12}, {true, 13}, {false, 15}, {true, 17}, {false, 17},
+    {false, 10}, {false, 12}, {true, 13}, {false, 15}, {true, 17}, {false, 17},
     {false, 21}, {false, 26}, {true, 21}, {true, 32}, {false, 32},
     {true, 44}, {false, 44}, {true, 56}, {true, 64}, {true, 88},
-    {true, 96}, {true, 112}, {true, 128}
+    {true, 72}, {true, 80}, {true, 96}, {true, 112}, {true, 128}
 };
 static lv_font_t *s_tile_fonts[sizeof(TILE_FONTS) / sizeof(TILE_FONTS[0])];
 
@@ -1581,155 +1581,111 @@ static void wmo_weather_icon(int code, float cx, float cy, float r, uint32_t c)
 
 // Один и тот же прогноз на плитке и в полноэкранном пульте: температура,
 // облачность, вероятность осадков, значки и общая шкала времени.
+typedef struct {
+    float lo, hi, step;
+    int divisions, digits;
+} forecast_scale_t;
+
+// Шаг от размаха данных, как у chart и geometry.grid_bounds в wb-svg-panel.
+static forecast_scale_t forecast_scale(float lo, float hi)
+{
+    if (fabsf(hi - lo) < 0.0001f) {
+        float pad = fmaxf(0.5f, fabsf(hi) * 0.05f);
+        lo -= pad; hi += pad;
+    }
+    float raw = (hi - lo) / 3.0f;
+    float power = powf(10, floorf(log10f(raw)));
+    const float mult[] = {1, 2, 2.5f, 5, 10};
+    float step = power * 10;
+    for (int i = 0; i < 5; i++)
+        if (raw <= power * mult[i]) { step = power * mult[i]; break; }
+    forecast_scale_t sc = {.lo = floorf(lo / step) * step,
+                           .hi = ceilf(hi / step) * step, .step = step};
+    sc.divisions = (int)lroundf((sc.hi - sc.lo) / step);
+    if (sc.divisions < 1) { sc.divisions = 1; sc.hi = sc.lo + step; }
+    sc.digits = step >= 1 && fabsf(step - roundf(step)) < 0.000001f ? 0 : step >= 0.1f ? 1 : 2;
+    return sc;
+}
+
+// Подписи осей занимают отдельные поля; внутри остаются только данные.
 static bool forecast_graph(const pad_t *p, float X0, float X1, float Y0, float Y1,
                            const lv_font_t *font, float scale, bool compact)
 {
-    float tv[W_SERIES];
-    int n = 0;
-    for (int i = 0; i < p->n_t && n < W_SERIES; i++)
-        if (!isnan(p->s_t[i])) tv[n++] = p->s_t[i];
-    if (n < 2 || X1 <= X0 || Y1 <= Y0) return false;
-
+    int n = p->n_t, valid = 0;
     float lo = 1e9f, hi = -1e9f;
     for (int i = 0; i < n; i++) {
-        if (tv[i] < lo) lo = tv[i];
-        if (tv[i] > hi) hi = tv[i];
+        if (!isfinite(p->s_t[i])) continue;
+        lo = fminf(lo, p->s_t[i]); hi = fmaxf(hi, p->s_t[i]); valid++;
     }
-    float padv = (hi - lo) * 0.10f;
-    if (padv < 1) padv = 1;
-    float grid_lo = floorf(lo - padv), grid_hi = ceilf(hi + padv);
-    if (grid_hi - grid_lo < 4) grid_hi = grid_lo + 4;
-    char b[48];
-    int divisions = 4;
-    for (int i = 0; i <= divisions; i++) {
-        float v = grid_lo + (grid_hi - grid_lo) * i / divisions;
-        float yy = Y1 - (Y1 - Y0) * i / divisions;
-        d_line(X0, yy, X1, yy, scale, K_INK, i == 0 || i == divisions ? 60 : 30);
-        if (compact) snprintf(b, sizeof(b), "%.0f", v);
-        else snprintf(b, sizeof(b), "%.0f°", v);
-        if (compact)
-            d_text(font, 0x6FA8CF, LV_OPA_COVER, X0 + 5 * scale, yy - 2 * scale, 0, b);
-        else
-            d_text(font, K_DIM, LV_OPA_COVER, X0 - 6 * scale, yy + 4 * scale, 2, b);
+    if (valid < 2 || X1 - X0 < 30 * scale || Y1 - Y0 < 24 * scale) return false;
+    forecast_scale_t sc = forecast_scale(lo, hi);
+    int divisions = sc.divisions;
+    float step = sc.step, grid_lo = sc.lo, grid_hi = sc.hi;
+    // Поле под шкалу определяется её текстом, а не фиксированными 42 px.
+    if (compact) {
+        char label[32];
+        int width = 0;
+        for (int i = 0; i <= divisions; i++) {
+            snprintf(label, sizeof(label), "%.*f", sc.digits, grid_lo + step * i);
+            int tw = text_w(font, label);
+            if (tw > width) width = tw;
+        }
+        X0 += width + 6 * scale;
     }
-
+    if (X1 - X0 < 20 * scale) return false;
     float xstep = (X1 - X0) / (n - 1);
-    if (p->n_cloud > 0) {
-        int step = n > 12 ? (n - 1) / 12 + 1 : 1;
-        for (int i = 0; i < p->n_cloud && i < n; i += step) {
-            if (isnan(p->s_cloud[i]) || p->s_cloud[i] <= 0) continue;
-            float xx = X0 + xstep * i;
-            float ww = xstep * step;
-            if (xx + ww > X1) ww = X1 - xx;
-            // На плитке фон приглушён сильнее: не более 26% непрозрачности,
-            // чтобы сетка и подписи оставались заметнее облачности.
-            float cloud = clampf(p->s_cloud[i] / 100.0f, 0, 1);
-            lv_opa_t op = (lv_opa_t)((compact ? 10 + 56 * cloud : 15 + 77 * cloud));
-            d_rect(xx, Y0, ww, Y1 - Y0, 0, 0x8A9AAE, op);
+    char b[48];
+    for (int i = 0; i < n; i++) {
+        float xx = X0 + xstep * i;
+        if (i < p->n_cloud && isfinite(p->s_cloud[i])) {
+            float left = fmaxf(X0, xx - xstep / 2), right = fminf(X1, xx + xstep / 2);
+            d_rect(left, Y0, right - left, Y1 - Y0, 0, 0x8A9AAE,
+                   (lv_opa_t)(40 * clampf(p->s_cloud[i] / 100.0f, 0, 1)));
+        }
+        if (i < p->n_prob && isfinite(p->s_prob[i]) && p->s_prob[i] > 0) {
+            float bh = (Y1 - Y0) * 0.38f * clampf(p->s_prob[i] / 100, 0, 1);
+            float bw = fminf(4 * scale, xstep * 0.4f);
+            float left = fmaxf(X0, xx - bw / 2), right = fminf(X1, xx + bw / 2);
+            d_rect(left, Y1 - bh, right - left, bh, scale, 0x3B8FD4, 120);
         }
     }
+    for (int i = 0; i <= divisions; i++) {
+        float yy = Y1 - (Y1 - Y0) * i / divisions;
+        d_line(X0, yy, X1, yy, scale, K_INK, 42);
+        int stride = (int)ceilf((font->line_height + 2 * scale) * divisions / (Y1 - Y0));
+        if (stride < 1) stride = 1;
+        if (i != divisions && i % stride) continue;
+        if (i != 0 && i != divisions && divisions - i < stride) continue;
+        snprintf(b, sizeof(b), "%.*f", sc.digits, grid_lo + step * i);
+        d_text(font, K_DIM, LV_OPA_COVER, X0 - 5 * scale,
+               yy + (font->line_height - font->base_line) * 0.35f, 2, b);
+    }
+    float prevx = 0, prevy = 0;
+    bool previous = false;
+    for (int i = 0; i < n; i++) {
+        // Пропуск не сдвигает часы и погодные ряды следующих точек.
+        if (!isfinite(p->s_t[i])) { previous = false; continue; }
+        float xx = X0 + xstep * i;
+        float yy = Y1 - (Y1 - Y0) * (p->s_t[i] - grid_lo) / (grid_hi - grid_lo);
+        if (previous) d_line(prevx, prevy, xx, yy, 2.2f * scale, 0x3B8FD4, LV_OPA_COVER);
+        if (p->s_t[i] == lo || p->s_t[i] == hi)
+            d_circle(xx, yy, 2.4f * scale, p->s_t[i] == hi ? 0xC4553B : 0x3B8FD4, LV_OPA_COVER);
+        prevx = xx; prevy = yy; previous = true;
+    }
+    // Короткие часы, как у chart; отсев по измеренной ширине подписи.
+    int hour_step = n >= 9 ? 3 : 2;
+    float last_right = X0 - 6 * scale;
     for (int i = 0; i < n; i++) {
         int hh = p->start_hour >= 0 ? (p->start_hour + i) % 24 : i;
-        if (hh % 3 == 0)
-            d_line(X0 + xstep * i, Y0, X0 + xstep * i, Y1, scale, K_INK, 24);
-    }
-    for (int i = 0; i < p->n_prob && i < n; i++) {
-        if (isnan(p->s_prob[i]) || p->s_prob[i] <= 0) continue;
-        float xx = X0 + xstep * i;
-        float bh = (Y1 - Y0) * 0.42f * clampf(p->s_prob[i] / 100.0f, 0, 1);
-        float bw = fmaxf(1.5f * scale, fminf((compact ? 4.0f : 6.0f) * scale, xstep * 0.36f));
-        d_rect(xx - bw / 2, Y1 - bh, bw, bh, 2 * scale, 0x3B8FD4, 130);
-    }
-
-    float prevx = 0, prevy = 0, fmin = 1e9f, fmax = -1e9f;
-    int imin = 0, imax = 0;
-    for (int i = 0; i < n; i++) {
-        if (tv[i] < fmin) { fmin = tv[i]; imin = i; }
-        if (tv[i] > fmax) { fmax = tv[i]; imax = i; }
-    }
-    // Заливка под кривой, как wfade у панели: полупрозрачный синий от
-    // кривой до нижней линии. Кривая и точки рисуются поверх.
-    {
-        int xi0 = (int)ceilf(X0), xi1 = (int)floorf(X1);
-        for (int xi = xi0; xi <= xi1; xi++) {
-            float t = (xi - X0) / xstep;
-            if (t < 0) t = 0;
-            if (t > n - 1) t = n - 1;
-            int i = (int)t;
-            if (i > n - 2) i = n - 2;
-            float k = t - i;
-            float yv = tv[i] + (tv[i + 1] - tv[i]) * k;
-            float yy = Y1 - (Y1 - Y0) * (yv - grid_lo) / (grid_hi - grid_lo);
-            if (yy < Y0) yy = Y0;
-            if (Y1 - yy >= 1.0f)
-                d_line(xi + 0.5f, yy, xi + 0.5f, Y1, 1, 0x5AA9E6, 46);
-        }
-    }
-    for (int i = 0; i < n; i++) {
-        float xx = X0 + xstep * i;
-        float yy = Y1 - (Y1 - Y0) * (tv[i] - grid_lo) / (grid_hi - grid_lo);
-        if (i) d_line(prevx, prevy, xx, yy, (compact ? 1.6f : 2.5f) * scale,
-                      0x3B8FD4, LV_OPA_COVER);
-        if (i == imin || i == imax) d_circle(xx, yy, 3.2f * scale, 0x3B8FD4, LV_OPA_COVER);
-        prevx = xx; prevy = yy;
-    }
-    // Экстремумы подписаны числами. На компактной плитке подпись без градуса
-    // и прижата к краю графика, чтобы не вылезти за его пределы.
-    float ex_tx[2] = {-1e9f, -1e9f}, ex_tw[2] = {0, 0};
-    if (imin != imax) {
-        for (int k = 0; k < 2; k++) {
-            int i = k ? imax : imin;
-            float xx = X0 + xstep * i;
-            float yy = Y1 - (Y1 - Y0) * (tv[i] - grid_lo) / (grid_hi - grid_lo);
-            snprintf(b, sizeof(b), compact ? "%.0f" : "%.0f°", tv[i]);
-            float tx = xx;
-            if (compact) {
-                int tw = text_w(font, b);
-                tx = clampf(xx, X0 + tw / 2.0f, X1 - tw / 2.0f);
-                ex_tx[k] = tx;
-                ex_tw[k] = tw;
-            }
-            float dy = k || yy > Y1 - 16 * scale ? (compact ? -10.0f : -6.0f) : 12.0f;
-            float ty = yy + dy * scale;
-            // Максимум подписан над точкой даже у верхней линии сетки:
-            // внизу он наезжал бы на кривую и описание.
-            if (compact && ty > Y1 + 4 * scale) ty = yy - 6 * scale;
-            if (compact) {
-                // Тёмная подложка: на плитке описание погоды лежит поверх
-                // графика, и без чипа подпись сливается с ним и с кривой.
-                int tw = text_w(font, b), lh = font->line_height;
-                d_rect((int)(tx - tw / 2.0f - 3 * scale), (int)(ty - lh * 0.82f),
-                       tw + (int)(6 * scale), (int)(lh * 1.05f), (int)(3 * scale),
-                       mixc(K_BG, 0x000000, 0.3f), 200);
-            }
-            d_text(font, 0x3B8FD4, LV_OPA_COVER, tx, ty, 1, b);
-        }
-    }
-    if (p->n_code > 0) {
-        int step = n > (compact ? 5 : 8) ? (n - 1) / (compact ? 4 : 7) : 1;
-        for (int i = 0; i < p->n_code && i < n; i += step)
-            wmo_weather_icon(p->s_code[i], X0 + xstep * i, Y0 + (compact ? 9.0f : 20.0f) * scale,
-                             (compact ? 7.0f : 12.0f) * scale, K_DIM);
-    }
-    for (int i = 0; i < n; i++) {
-        int hh = p->start_hour >= 0 ? (p->start_hour + i) % 24 : i;
-        float xx = X0 + xstep * i;
-        if (hh % 6 == 0 && xx < X1 - 22 * scale &&
-            (!compact || xx > X0 + 30 * scale)) {
-            if (compact) snprintf(b, sizeof(b), "%02d", hh);
-            else snprintf(b, sizeof(b), "%02d:00", hh);
-            // Метка часа не должна слипаться с подписью экстремума рядом.
-            if (compact) {
-                float hw = text_w(font, b);
-                bool clash = false;
-                for (int k = 0; k < 2; k++)
-                    if (fabsf(xx - ex_tx[k]) < (hw + ex_tw[k]) / 2.0f + 3 * scale)
-                        clash = true;
-                if (clash) continue;
-            }
-            d_text(font, K_DIM, LV_OPA_COVER, xx,
-                   Y1 + (compact ? -2.0f : 17.0f) * scale, 1, b);
-        }
+        if (i && hh % hour_step) continue;
+        snprintf(b, sizeof(b), p->start_hour >= 0 ? "%02d" : "+%d", hh);
+        float xx = X0 + xstep * i, tw = text_w(font, b);
+        float left = clampf(xx - tw / 2, X0, X1 - tw);
+        if (left < last_right + 5 * scale) continue;
+        d_text(font, K_DIM, LV_OPA_COVER, left, Y1 + 15 * scale, 0, b);
+        last_right = left + tw;
+        if (!compact && i < p->n_code)
+            wmo_weather_icon(p->s_code[i], xx, Y0 - 17 * scale, 9 * scale, K_DIM);
     }
     return true;
 }
@@ -1757,7 +1713,7 @@ static void draw_weather(pad_t *p)
     else snprintf(vals[0], sizeof(vals[0]), "—");
     if (p->has_wpress) snprintf(vals[1], sizeof(vals[1]), "%.0f мм", p->w_press);
     else snprintf(vals[1], sizeof(vals[1]), "—");
-    if (p->has_wwind) snprintf(vals[2], sizeof(vals[2]), "%.1f м/с", p->w_wind);
+    if (p->has_wwind) snprintf(vals[2], sizeof(vals[2]), "%.0f км/ч", p->w_wind);
     else snprintf(vals[2], sizeof(vals[2]), "—");
     for (int i = 0; i < 3; i++) {
         int xx = 36 + i * 140;
@@ -1767,7 +1723,7 @@ static void draw_weather(pad_t *p)
     }
 
     // График поднят выше: почти вплотную под плашками показателей.
-    if (!forecast_graph(p, 54, 452, 204, 384, F13, 1.0f, false))
+    if (!forecast_graph(p, 54, 452, 234, 384, F13, 1.0f, false))
         d_text(F17, K_DIM, LV_OPA_COVER, 240, 304, 1, "Прогноз пока не получен");
     d_head(p, false, true);
 }
@@ -2808,26 +2764,6 @@ static void clock_low(const clock_data_t *d, int x, int y, int w, int h)
                      ox + PS(88.5f * k), oy + PS(55 * k), 1, PS(153 * k), d->date);
 }
 
-static void clock_half(const clock_data_t *d, int x, int y, int w, int h)
-{
-    float k = fminf(w / (170.0f * s_tile_scale), h / (85.0f * s_tile_scale));
-    float ox = x + (w - PS(170 * k)) / 2.0f, oy = y + (h - PS(85 * k)) / 2.0f;
-    d_text(clock_font(true, 56, k, d->time, PS(154 * k)), K_INK, LV_OPA_COVER,
-           ox + PS(85 * k), oy + PS(56 * k), 1, d->time);
-    d_text_ellipsize(clock_font(false, 14, k, NULL, 0), K_DIM,
-                     ox + PS(85 * k), oy + PS(77 * k), 1, PS(154 * k), d->date);
-}
-
-static void clock_square(const clock_data_t *d, int x, int y, int w, int h)
-{
-    float k = fminf(w / (177.0f * s_tile_scale), h / (170.0f * s_tile_scale));
-    float ox = x + (w - PS(177 * k)) / 2.0f, oy = y + (h - PS(170 * k)) / 2.0f;
-    d_text(clock_font(true, 64, k, d->time, PS(154 * k)), K_INK, LV_OPA_COVER,
-           ox + PS(88.5f * k), oy + PS(93 * k), 1, d->time);
-    d_text_ellipsize(clock_font(false, 15, k, NULL, 0), K_DIM,
-                     ox + PS(88.5f * k), oy + PS(120 * k), 1, PS(154 * k), d->date);
-}
-
 static void weather_low(const pad_t *p, const clock_data_t *d, int x, int y, int w, int h)
 {
     float k = fminf(w / (177.0f * s_tile_scale), h / (75.0f * s_tile_scale));
@@ -2899,8 +2835,8 @@ static void clock_fill(const clock_data_t *d, int x, int y, int w, int h)
         return;
     }
     bool date = H >= 56;
-    const lv_font_t *tf = fit_font(true, H * (H < 100 ? 0.60f : 0.52f), d->time,
-                                   (int)(w * 0.88f), &tpx);
+    const lv_font_t *tf = fit_font(true, H * (H < 100 ? 0.76f : 0.72f), d->time,
+                                   (int)(w * 0.94f), &tpx);
     const lv_font_t *df = date ? fit_font(false, fmaxf(12, fminf(26, tpx * 0.24f)),
                                           NULL, 0, &dpx) : NULL;
     float gap = date ? 0.26f * tpx : 0, block = CAP * tpx + gap + (date ? CAP * dpx : 0);
@@ -3000,24 +2936,24 @@ static void tile_clock(const pad_t *p, int x, int y, int w, int h)
         d_line(x + split, y + PS(6), x + split, y + h - PS(6), PL(1), K_DIM, 50);
     } else {
         float ratio = (float)w / h;
-        if (ratio > 1.2f) {
+        if (ratio > 1.2f && w >= PS(300)) {
             int split = w / 2;
-            clock_square(&d, x, y, split, h);
+            clock_fill(&d, x, y, split, h);
             weather_square(p, &d, x + split, y, w - split, h);
             d_line(x + split, y + PS(25), x + split, y + h - PS(25), PL(1), K_DIM, 50);
         } else if (ratio < 0.6f) {
             int split = h / 2;
-            clock_square(&d, x, y, w, split);
+            clock_fill(&d, x, y, w, split);
             weather_square(p, &d, x, y + split, w, h - split);
             d_line(x + PS(16), y + split, x + w - PS(16), y + split, PL(1), K_DIM, 50);
         } else if (ratio < 0.85f) {
             int split = h * 2 / 3;
-            clock_square(&d, x, y, w, split);
+            clock_fill(&d, x, y, w, split);
             weather_half(p, &d, x, y + split, w, h - split);
             d_line(x + PS(16), y + split, x + w - PS(16), y + split, PL(1), K_DIM, 50);
         } else {
             int split = h / 2;
-            clock_half(&d, x, y, w, split);
+            clock_fill(&d, x, y, w, split);
             weather_half(p, &d, x, y + split, w, h - split);
             d_line(x + PS(16), y + split, x + w - PS(16), y + split, PL(1), K_DIM, 50);
         }
@@ -3025,47 +2961,33 @@ static void tile_clock(const pad_t *p, int x, int y, int w, int h)
     if (clipped) L->_clip_area = clip_old;
 }
 
-// Погода на плитке повторяет forecast.wb-svg-panel: текущие значение и
-// описание поверх общего графика, название и текущие показатели внизу.
+// Температура, описание, график и показатели имеют отдельные строки.
 static void tile_weather(const pad_t *p, int x, int y, int w, int h)
 {
-    char b[96];
-    lv_area_t clip_old = L->_clip_area, ta = {x + PS(2), y + PS(2), x + w - PS(3), y + h - PS(3)}, cl;
-    bool clipped = lv_area_intersect(&cl, &clip_old, &ta);
-    if (clipped) L->_clip_area = cl;
-
-    if (h >= PS(90))
-        // Пропорции forecast у wb-svg-panel: кривая между 40% и 82% высоты.
-        // Сверху остаются значок, текущая температура и описание, снизу -
-        // часы со значками и название плитки. Низким плиткам верх прижат
-        // ниже описания, чтобы сетка не наезжала на температуру.
-        forecast_graph(p, x + PS(3), x + w - PS(3),
-                       y + fmaxf(h * 0.40f, PS(72)), y + h * 0.82f,
-                       P_F12, s_tile_scale, true);
-
-    int hour = ui_hour_now();
-    const char *ic = wmo_icon(p->n_code ? p->s_code[0] : -1, hour >= 6 && hour < 21);
-    if (ic) d_icon(ic, x + PS(30), y + PS(27), PS(28), 2.0f * s_tile_scale, K_INK, LV_OPA_COVER);
-    if (p->has_wtemp) snprintf(b, sizeof(b), "%.0f", p->w_temp);
-    else snprintf(b, sizeof(b), "--");
-    int wn = text_w(P_F32, b), wd = text_w(P_F17, "°");
-    float right = x + w - PS(14);
-    d_num_deg(P_F32, P_F17, K_INK, right - (wn + wd) / 2.0f, y + PS(46), -PS(20), b, "°");
-    if (p->w_desc[0])
-        d_text_ellipsize(P_F12, K_DIM, right, y + PS(64), 2, w / 2, p->w_desc);
-
-    // Название слева и компактная строка «влажность · давление · ветер» справа.
-    d_text_ellipsize(P_F13, K_INK, x + PS(10), y + h - PS(8), 0, w / 2 - PS(12),
-                     p->title ? p->title : "");
-    b[0] = 0;
-    if (p->has_whum) snprintf(b + strlen(b), sizeof(b) - strlen(b), "%.0f%%", p->w_hum);
-    if (p->has_wpress) snprintf(b + strlen(b), sizeof(b) - strlen(b), "%s%.0f мм",
-                                b[0] ? " · " : "", p->w_press);
-    if (p->has_wwind) snprintf(b + strlen(b), sizeof(b) - strlen(b), "%s%.1f м/с",
-                               b[0] ? " · " : "", p->w_wind);
-    if (b[0]) d_text_ellipsize(P_F12, K_DIM, x + w - PS(10), y + h - PS(8), 2,
-                               w / 2 - PS(6), b);
-    if (clipped) L->_clip_area = clip_old;
+    clock_data_t d;
+    clock_data(&d, p);
+    lv_area_t old = L->_clip_area, area = {x + 1, y + 1, x + w - 2, y + h - 2}, clip;
+    if (!lv_area_intersect(&clip, &old, &area)) return;
+    L->_clip_area = clip;
+    if (h < PS(130)) {
+        weather_fill(p, &d, x, y, w, h);
+        L->_clip_area = old;
+        return;
+    }
+    bool low = h < PS(200);
+    int tpx = 0;
+    const lv_font_t *tf = fit_font(true, 44, d.temp, w - PS(70), &tpx);
+    if (d.icon) d_icon(d.icon, x + PS(30), y + PS(30), PS(30), PL(2), K_INK, LV_OPA_COVER);
+    d_text(tf, K_INK, LV_OPA_COVER, x + w - PS(12), y + PS(38), 2, d.temp);
+    d_text_ellipsize(tile_font(false, 15), K_DIM, x + PS(12), y + PS(low ? 52 : 60), 0, w - PS(24), p->w_desc);
+    bool graph = forecast_graph(p, x + PS(8), x + w - PS(12), y + PS(low ? 68 : 78),
+                                y + h - PS(low ? 40 : 56), tile_font(false, 10), s_tile_scale, true);
+    if (!graph)
+        d_text_ellipsize(P_F12, K_DIM, x + w / 2, y + h / 2 + PS(22), 1,
+                         w - PS(24), "Прогноз пока не получен");
+    d_text_ellipsize(P_F12, K_DIM, x + w / 2, y + h - PS(low ? 5 : 20), 1, w - PS(24), d.extra);
+    if (!low) d_text_ellipsize(P_F13, K_INK, x + w / 2, y + h - PS(5), 1, w - PS(24), p->title ? p->title : "");
+    L->_clip_area = old;
 }
 
 // «Сегодня» на плитке: задания строками с переносом, сколько помещается (с 0.11).

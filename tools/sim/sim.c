@@ -18,6 +18,14 @@ void mq_publish(const char *t, const char *p)
     sim_commands++;
     printf("MQTT %s = %s\n", t, p);
 }
+static time_t sim_time(time_t *out)
+{
+    const char *fixed = getenv("SIM_TIME");
+    time_t value = fixed ? (time_t)strtoll(fixed, NULL, 10) : time(NULL);
+    if (out) *out = value;
+    return value;
+}
+#define time sim_time
 #include "../../main/pads.c"
 #include "../../main/charts.c"
 bool ui_lock(int ms) { return true; }
@@ -92,6 +100,7 @@ void camera_main_visible(bool visible) { sim_camera_visible = visible; }
 void camera_reset(void) {}
 bool camera_full_active(void) { return false; }
 #include "../../main/tiles.c"
+#undef time
 
 static uint32_t fb[480 * 480];
 static void flush(lv_display_t *d, const lv_area_t *a, uint8_t *px)
@@ -157,6 +166,25 @@ static bool sim_theme(bool live, lv_display_t *d)
 
 int main(int argc, char **argv)
 {
+    if (argc > 1 && !strcmp(argv[1], "--weather-scale-check")) {
+        const float cases[][5] = {
+            {-13, -7.5f, -14, -6, 2},
+            {20.1f, 20.9f, 20, 21, 0.5f},
+            {0, 7, 0, 7.5f, 2.5f},
+            {-40, 40, -50, 50, 50},
+        };
+        for (int i = 0; i < 4; i++) {
+            forecast_scale_t sc = forecast_scale(cases[i][0], cases[i][1]);
+            if (fabsf(sc.lo - cases[i][2]) > 0.001f ||
+                fabsf(sc.hi - cases[i][3]) > 0.001f ||
+                fabsf(sc.step - cases[i][4]) > 0.001f) return 21;
+            if (i == 2 && sc.digits != 1) return 22;
+        }
+        forecast_scale_t flat = forecast_scale(-10, -10);
+        if (!(flat.lo < -10 && flat.hi > -10 && isfinite(flat.step))) return 23;
+        puts("weather-scale-check: диапазоны, дробный шаг, постоянный ряд — OK");
+        return 0;
+    }
     // sim tile.json values.txt out.ppm [sheet]
     // sim --screen layout.json values.txt out.ppm [страница] [history.json] [1 - полный экран]
     lv_init();
@@ -211,11 +239,11 @@ int main(int argc, char **argv)
             int n = atoi(argv[9]);
             if (n >= 0 && n < s_count && s_tiles[n].pad) pad_open(s_tiles[n].pad);
         }
-        // [10] clock-check - 6 размеров × 3 режима, погодный pad и минутный tick.
+        // [10] clock-check - 7 размеров × 3 режима, погодный pad и минутный tick.
         if (argc > 10 && !strcmp(argv[10], "clock-check")) {
-            static const int sizes[6][2] = {{4, 1}, {2, 2}, {4, 2}, {4, 4}, {3, 3}, {2, 3}};
-            if (s_count != 18 || s_count2 != 1) {
-                fprintf(stderr, "clock-check: ожидались 18 плиток и 1 заставка\n");
+            static const int sizes[7][2] = {{4, 1}, {2, 2}, {4, 2}, {4, 4}, {3, 3}, {2, 3}, {3, 2}};
+            if (s_count != 21 || s_count2 != 1) {
+                fprintf(stderr, "clock-check: ожидались 21 плитка и 1 заставка\n");
                 return 13;
             }
             for (int i = 0; i < s_count; i++) {
@@ -237,7 +265,7 @@ int main(int argc, char **argv)
             }
             tiles_clock_tick();
             tiles_clock_tick();
-            printf("clock-check: 6 размеров × 3 режима, MQTT, заставка и tick — OK\n");
+            printf("clock-check: 7 размеров × 3 режима, MQTT, заставка и tick — OK\n");
         }
         // [10] saver - показать заставку; saver-check - войти и выйти с проверкой.
         if (argc > 10 && !strncmp(argv[10], "saver", 5) && s_saver_scr) {

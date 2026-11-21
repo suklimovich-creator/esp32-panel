@@ -1,0 +1,291 @@
+{
+  "cols": 3,
+  "pages": [
+    {
+      "title": "1",
+      "tiles": [
+        {
+          "type": "clock",
+          "title": "Часы",
+          "view": "clock",
+          "w": 1.5,
+          "h": 1,
+          "temp": "/devices/weather/controls/temperature",
+          "desc": "/devices/weather/controls/description",
+          "hum": "/devices/weather/controls/humidity",
+          "press": "/devices/weather/controls/pressure",
+          "wind": "/devices/weather/controls/windspeed",
+          "tmin": "/devices/weather/controls/temp_min_12h",
+          "tmax": "/devices/weather/controls/temp_max_12h",
+          "series": {
+            "temp": "/devices/weather/controls/temp_series",
+            "code": "/devices/weather/controls/code_series",
+            "prob": "/devices/weather/controls/precip_prob_series",
+            "cloud": "/devices/weather/controls/cloud_series",
+            "start": "/devices/weather/controls/forecast_start"
+          }
+        }
+      ]
+    },
+    {
+      "title": "2",
+      "tiles": [
+        {
+          "type": "clock",
+          "title": "Часы",
+          "view": "clock_weather",
+          "w": 1.5,
+          "h": 1,
+          "temp": "/devices/weather/controls/temperature",
+          "desc": "/devices/weather/controls/description",
+          "hum": "/devices/weather/controls/humidity",
+          "press": "/devices/weather/controls/pressure",
+          "wind": "/devices/weather/controls/windspeed",
+          "tmin": "/devices/weather/controls/temp_min_12h",
+          "tmax": "/devices/weather/controls/temp_max_12h",
+          "series": {
+            "temp": "/devices/weather/controls/temp_series",
+            "code": "/devices/weather/controls/code_series",
+            "prob": "/devices/weather/controls/precip_prob_series",
+            "cloud": "/devices/weather/controls/cloud_series",
+            "start": "/devices/weather/controls/forecast_start"
+          }
+        }
+      ]
+    },
+    {
+      "title": "3",
+      "tiles": [
+        {
+          "type": "clock",
+          "title": "Часы",
+          "view": "weather",
+          "w": 1.5,
+          "h": 1,
+          "temp": "/devices/weather/controls/temperature",
+          "desc": "/devices/weather/controls/description",
+          "hum": "/devices/weather/controls/humidity",
+          "press": "/devices/weather/controls/pressure",
+          "wind": "/devices/weather/controls/windspeed",
+          "tmin": "/devices/weather/controls/temp_min_12h",
+          "tmax": "/devices/weather/controls/temp_max_12h",
+          "series": {
+            "temp": "/devices/weather/controls/temp_series",
+            "code": "/devices/weather/controls/code_series",
+            "prob": "/devices/weather/controls/precip_prob_series",
+            "cloud": "/devices/weather/controls/cloud_series",
+            "start": "/devices/weather/controls/forecast_start"
+          }
+        }
+      ]
+    },
+    {
+      "title": "4",
+      "tiles": [
+        {
+          "type": "clock",
+          "title": "Часы",
+          "view": "clock",
+          "w": 1.5,
+          "h": 1.5,
+          "temp": "/devices/weather/controls/temperature",
+          "desc": "/devices/weather/controls/description",
+          "hum": "/devices/weather/controls/humidity",
+          "press": "/devices/weather/controls/pressure",
+          "wind": "/devices/weather/controls/windspeed",
+          "tmin": "/devices/weather/controls/temp_min_12h",
+          "tmax": "/devices/weather/controls/temp_max_12h",
+          "series": {
+            "temp": "/devices/weather/controls/temp_series",
+            "code": "/devices/weather/controls/code_series",
+            "prob": "/devices/weather/controls/precip_prob_series",
+            "cloud": "/devices/weather/controls/cloud_series",
+            "start": "/devices/weather/controls/forecast_start"
+          }
+        }
+      ]
+    },
+    {
+      "title": "5",
+      "tiles": [
+        {
+          "type": "clock",
+          "title": "Часы",
+          "view": "clock_weather",
+          "w": 1.5,
+          "h": 1.5,
+          "temp": "/devices/weather/controls/temperature",
+          "desc": "/devices/weather/controls/description",
+          "hum": "/devices/weather/controls/humidity",
+          "press": "/devices/weather/controls/pressure",
+          "wind": "/devices/weather/controls/windspeed",
+          "tmin": "/devices/weather/controls/temp_min_12h",
+          "tmax": "/devices/weather/controls/temp_max_12h",
+          "series": {
+            "temp": "/devices/weather/controls/temp_series",
+            "code": "/devices/weather/controls/code_series",
+            "prob": "/devices/weather/controls/precip_prob_series",
+            "cloud": "/devices/weather/controls/cloud_series",
+            "start": "/devices/weather/controls/forecast_start"
+          }
+        }
+      ]
+    },
+    {
+      "title": "6",
+      "tiles": [
+        {
+          "type": "clock",
+          "title": "Часы",
+          "view": "weather",
+          "w": 1.5,
+          "h": 1.5,
+          "temp": "/devices/weather/controls/temperature",
+          "desc": "/devices/weather/controls/description",
+          "hum": "/devices/weather/controls/humidity",
+          "press": "/devices/weather/controls/pressure",
+          "wind": "/devices/weather/controls/windspeed",
+          "tmin": "/devices/weather/controls/temp_min_12h",
+          "tmax": "/devices/weather/controls/temp_max_12h",
+          "series": {
+            "temp": "/devices/weather/controls/temp_series",
+            "code": "/devices/weather/controls/code_series",
+            "prob": "/devices/weather/controls/precip_prob_series",
+            "cloud": "/devices/weather/controls/cloud_series",
+            "start": "/devices/weather/controls/forecast_start"
+          }
+        }
+      ]
+    },
+    {
+      "title": "7",
+      "tiles": [
+        {
+          "type": "weather",
+          "title": "Улица",
+          "view": "clock_weather",
+          "w": 1.5,
+          "h": 1,
+          "temp": "/devices/weather/controls/temperature",
+          "desc": "/devices/weather/controls/description",
+          "hum": "/devices/weather/controls/humidity",
+          "press": "/devices/weather/controls/pressure",
+          "wind": "/devices/weather/controls/windspeed",
+          "tmin": "/devices/weather/controls/temp_min_12h",
+          "tmax": "/devices/weather/controls/temp_max_12h",
+          "series": {
+            "temp": "/devices/weather/controls/temp_series",
+            "code": "/devices/weather/controls/code_series",
+            "prob": "/devices/weather/controls/precip_prob_series",
+            "cloud": "/devices/weather/controls/cloud_series",
+            "start": "/devices/weather/controls/forecast_start"
+          }
+        }
+      ]
+    },
+    {
+      "title": "8",
+      "tiles": [
+        {
+          "type": "weather",
+          "title": "Улица",
+          "view": "clock_weather",
+          "w": 1.5,
+          "h": 1.5,
+          "temp": "/devices/weather/controls/temperature",
+          "desc": "/devices/weather/controls/description",
+          "hum": "/devices/weather/controls/humidity",
+          "press": "/devices/weather/controls/pressure",
+          "wind": "/devices/weather/controls/windspeed",
+          "tmin": "/devices/weather/controls/temp_min_12h",
+          "tmax": "/devices/weather/controls/temp_max_12h",
+          "series": {
+            "temp": "/devices/weather/controls/temp_series",
+            "code": "/devices/weather/controls/code_series",
+            "prob": "/devices/weather/controls/precip_prob_series",
+            "cloud": "/devices/weather/controls/cloud_series",
+            "start": "/devices/weather/controls/forecast_start"
+          }
+        }
+      ]
+    },
+    {
+      "title": "9",
+      "tiles": [
+        {
+          "type": "weather",
+          "title": "Улица",
+          "view": "clock_weather",
+          "w": 2,
+          "h": 2,
+          "temp": "/devices/weather/controls/temperature",
+          "desc": "/devices/weather/controls/description",
+          "hum": "/devices/weather/controls/humidity",
+          "press": "/devices/weather/controls/pressure",
+          "wind": "/devices/weather/controls/windspeed",
+          "tmin": "/devices/weather/controls/temp_min_12h",
+          "tmax": "/devices/weather/controls/temp_max_12h",
+          "series": {
+            "temp": "/devices/weather/controls/temp_series",
+            "code": "/devices/weather/controls/code_series",
+            "prob": "/devices/weather/controls/precip_prob_series",
+            "cloud": "/devices/weather/controls/cloud_series",
+            "start": "/devices/weather/controls/forecast_start"
+          }
+        }
+      ]
+    },
+    {
+      "title": "10",
+      "tiles": [
+        {
+          "type": "weather",
+          "title": "Улица",
+          "view": "clock_weather",
+          "w": 1,
+          "h": 1,
+          "temp": "/devices/weather/controls/temperature",
+          "desc": "/devices/weather/controls/description",
+          "hum": "/devices/weather/controls/humidity",
+          "press": "/devices/weather/controls/pressure",
+          "wind": "/devices/weather/controls/windspeed",
+          "tmin": "/devices/weather/controls/temp_min_12h",
+          "tmax": "/devices/weather/controls/temp_max_12h",
+          "series": {
+            "temp": "/devices/weather/controls/temp_series",
+            "code": "/devices/weather/controls/code_series",
+            "prob": "/devices/weather/controls/precip_prob_series",
+            "cloud": "/devices/weather/controls/cloud_series",
+            "start": "/devices/weather/controls/forecast_start"
+          }
+        }
+      ]
+    },
+    {
+      "title": "11",
+      "tiles": [
+        {
+          "type": "weather",
+          "title": "Улица",
+          "view": "clock_weather",
+          "w": 2,
+          "h": 0.5,
+          "temp": "/devices/weather/controls/temperature",
+          "desc": "/devices/weather/controls/description",
+          "hum": "/devices/weather/controls/humidity",
+          "press": "/devices/weather/controls/pressure",
+          "wind": "/devices/weather/controls/windspeed",
+          "tmin": "/devices/weather/controls/temp_min_12h",
+          "tmax": "/devices/weather/controls/temp_max_12h",
+          "series": {
+            "temp": "/devices/weather/controls/temp_series",
+            "code": "/devices/weather/controls/code_series",
+            "prob": "/devices/weather/controls/precip_prob_series",
+            "cloud": "/devices/weather/controls/cloud_series",
+            "start": "/devices/weather/controls/forecast_start"
+          }
+        }
+      ]
+    }
+  ]
+}

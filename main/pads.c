@@ -823,14 +823,14 @@ static void d_fan(float x, float y, int lit, uint32_t c)
 }
 
 // Шапка: крупная «назад» (пальцем не промахнуться), название, питание.
-static void d_head(const pad_t *p, bool with_power, bool on)
+static void d_head_ex(const pad_t *p, bool with_power, bool on, int title_width)
 {
     d_circle(36, 36, 26, pressed(Z_BACK, 0) ? TH(PRESSED) : K_BTN, LV_OPA_COVER);
     d_icon(IC_BACK, 36, 36, 26, 3, K_INK, LV_OPA_COVER);
     zone(0, 0, 84, 84, Z_BACK, 0);
     char t[64];
     snprintf(t, sizeof(t), "%s", p->title ? p->title : "");
-    d_text(F17, K_INK, LV_OPA_COVER, 240, 42, 1, t);
+    d_text_ellipsize(F17, K_INK, 240, 42, 1, title_width, t);
     if (with_power) {
         uint32_t bg = on ? K_ACTIVE : K_BTN;
         if (pressed(Z_POWER, 0)) bg = on ? mixc(K_ACTIVE, 0x000000, 0.12f) : TH(PRESSED);
@@ -838,6 +838,11 @@ static void d_head(const pad_t *p, bool with_power, bool on)
         d_icon(IC_POWER, 444, 36, 26, 2.6f, on ? K_ACT_INK : K_INK, LV_OPA_COVER);
         zone(396, 0, 480, 84, Z_POWER, 0);
     }
+}
+
+static void d_head(const pad_t *p, bool with_power, bool on)
+{
+    d_head_ex(p, with_power, on, 480);
 }
 
 // Нижняя шторка выбора (режим, скорость, жалюзи) - как у панели.
@@ -1693,10 +1698,8 @@ static void tile_weather(const pad_t *p, int x, int y, int w, int h, bool full);
 static void draw_weather(pad_t *p)
 {
     d_rect(0, 0, 480, 480, 0, K_BG, LV_OPA_COVER);
-    // Полный экран использует композицию плитки без второй системы отступов
-    // и кеглей: график, шкалы и нижняя строка совпадают при размере 480×480.
+    // Полный экран использует общую композицию, но имеет более крупные кегли.
     tile_weather(p, 0, 0, 480, 480, true);
-    d_head(p, false, true);
 }
 
 // ---- «Сегодня» (с 0.11): все задачи и события, прокрутка жестом
@@ -2933,7 +2936,7 @@ static void tile_clock(const pad_t *p, int x, int y, int w, int h)
 }
 
 // Температура, описание, график и показатели имеют отдельные строки.
-// На полном экране место значка занимает кнопка «назад», описание начинается после неё.
+// На полном экране крупнее текст, а заголовок ограничен свободным местом перед температурой.
 static void tile_weather(const pad_t *p, int x, int y, int w, int h, bool full)
 {
     clock_data_t d;
@@ -2948,23 +2951,34 @@ static void tile_weather(const pad_t *p, int x, int y, int w, int h, bool full)
     }
     bool low = h < PS(200);
     int tpx = 0;
-    const lv_font_t *tf = fit_font(true, 44, d.temp, w - PS(70), &tpx);
+    const lv_font_t *tf = fit_font(true, full ? 56 : 44, d.temp, w - PS(70), &tpx);
     if (!full && d.icon) d_icon(d.icon, x + PS(30), y + PS(30), PS(30), PL(2), K_INK, LV_OPA_COVER);
-    d_text(tf, K_INK, LV_OPA_COVER, x + w - PS(12), y + PS(38), 2, d.temp);
-    d_text_ellipsize(tile_font(false, 15), K_DIM, x + PS(full ? 74 : 12),
-                     y + PS(low ? 52 : 60), 0, w - PS(full ? 86 : 24), p->w_desc);
-    bool graph = forecast_graph(p, x + PS(1), x + w - PS(2), y + PS(low ? 64 : 72),
-                                y + h - PS(28), tile_font(false, 10), s_tile_scale, true);
+    d_text(tf, K_INK, LV_OPA_COVER, x + w - PS(12), y + PS(full ? 50 : 38), 2, d.temp);
+    d_text_ellipsize(tile_font(false, full ? 17 : 15), K_DIM, x + PS(full ? 74 : 12),
+                     y + PS(full ? 88 : low ? 52 : 60), 0,
+                     w - PS(full ? 86 : 24), p->w_desc);
+    bool graph = forecast_graph(p, x + PS(1), x + w - PS(2),
+                                y + PS(full ? 108 : low ? 64 : 72), y + h - PS(28),
+                                tile_font(false, full ? 15 : 10), s_tile_scale, true);
     if (!graph)
-        d_text_ellipsize(P_F12, K_DIM, x + w / 2, y + h / 2 + PS(22), 1,
+        d_text_ellipsize(full ? tile_font(false, 17) : P_F12, K_DIM,
+                         x + w / 2, y + h / 2 + PS(22), 1,
                          w - PS(24), "Прогноз пока не получен");
     const char *title = p->title && p->title[0] ? p->title : "Погода";
-    int title_w = text_w(P_F13, title);
+    const lv_font_t *bf = full ? P_F17 : P_F13;
+    int title_w = text_w(bf, title);
     if (title_w > w * 0.32f) title_w = (int)(w * 0.32f);
     int extra_w = w - PS(24) - title_w - PS(10);
-    const lv_font_t *ef = fit_font(false, 12, d.extra, extra_w, NULL);
-    d_text_ellipsize(P_F13, K_INK, x + PS(12), y + h - PS(9), 0, title_w, title);
+    const lv_font_t *ef = fit_font(false, full ? 17 : 12, d.extra, extra_w, NULL);
+    d_text_ellipsize(bf, K_INK, x + PS(12), y + h - PS(9), 0, title_w, title);
     d_text_ellipsize(ef, K_DIM, x + w - PS(12), y + h - PS(9), 2, extra_w, d.extra);
+    if (full) {
+        int temp_left = x + w - PS(12) - text_w(tf, d.temp);
+        int title_width = 2 * (temp_left - PS(16) - (x + w / 2));
+        if (title_width < PS(64)) title_width = PS(64);
+        if (title_width > w - 2 * PS(84)) title_width = w - 2 * PS(84);
+        d_head_ex(p, false, true, title_width);
+    }
     L->_clip_area = old;
 }
 

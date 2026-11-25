@@ -356,15 +356,6 @@ static uint32_t light_hue_q(const pad_t *p, float q)
                     : mixc(TH(CCT_MID), pad_warm(p), (q - 0.5f) * 2);
 }
 
-// Час дня для значка погоды; без сети (время не синхронизировано) - день.
-static int ui_hour_now(void)
-{
-    time_t t = time(NULL);
-    struct tm tmv;
-    localtime_r(&t, &tmv);
-    return tmv.tm_year > 120 ? tmv.tm_hour : 12;
-}
-
 // Код WMO -> значок панели; ночью ясное небо - луна.
 static const char *wmo_icon(int code, bool day)
 {
@@ -1607,7 +1598,7 @@ static forecast_scale_t forecast_scale(float lo, float hi)
     return sc;
 }
 
-// На плитке подписи внутри графика, как в wb-svg-panel; в пульте — снаружи.
+// В компактном режиме подписи внутри графика, как в wb-svg-panel.
 static bool forecast_graph(const pad_t *p, float X0, float X1, float Y0, float Y1,
                            const lv_font_t *font, float scale, bool compact)
 {
@@ -1697,41 +1688,14 @@ static bool forecast_graph(const pad_t *p, float X0, float X1, float Y0, float Y
     return true;
 }
 
+static void tile_weather(const pad_t *p, int x, int y, int w, int h, bool full);
+
 static void draw_weather(pad_t *p)
 {
-    d_rect(0, 0, 480, 480, 0, K_BG2, LV_OPA_COVER);
-    int hour = ui_hour_now();
-    const char *ic = wmo_icon(p->n_code ? p->s_code[0] : -1, hour >= 6 && hour < 21);
-    if (ic) d_icon(ic, 64, 124, 60, 3.6f, K_INK, LV_OPA_COVER);
-    char b[80];
-    if (p->has_wtemp) snprintf(b, sizeof(b), "%.0f", p->w_temp);
-    else snprintf(b, sizeof(b), "--");
-    d_num_deg(F60, F17, K_INK, 166, 146, -34, b, "°");
-    if (p->w_desc[0]) d_text_ellipsize(F17, K_DIM, 340, 116, 1, 220, p->w_desc);
-    if (p->has_wt) {
-        snprintf(b, sizeof(b), "мин %.0f°  макс %.0f°", p->w_tmin, p->w_tmax);
-        d_text(F13, K_DIM, LV_OPA_COVER, 340, 141, 1, b);
-    }
-
-    // Текущие показатели - над прогнозом, а не отдельной строкой под ним.
-    const char *labels[3] = {"Влажность", "Давление", "Ветер"};
-    char vals[3][24];
-    if (p->has_whum) snprintf(vals[0], sizeof(vals[0]), "%.0f %%", p->w_hum);
-    else snprintf(vals[0], sizeof(vals[0]), "—");
-    if (p->has_wpress) snprintf(vals[1], sizeof(vals[1]), "%.0f мм", p->w_press);
-    else snprintf(vals[1], sizeof(vals[1]), "—");
-    if (p->has_wwind) snprintf(vals[2], sizeof(vals[2]), "%.0f км/ч", p->w_wind);
-    else snprintf(vals[2], sizeof(vals[2]), "—");
-    for (int i = 0; i < 3; i++) {
-        int xx = 36 + i * 140;
-        d_rect(xx, 160, 128, 40, 14, K_CHIP, LV_OPA_COVER);
-        d_text(F13, K_DIM, LV_OPA_COVER, xx + 64, 175, 1, labels[i]);
-        d_text(F13, K_INK, LV_OPA_COVER, xx + 64, 192, 1, vals[i]);
-    }
-
-    // График поднят выше: почти вплотную под плашками показателей.
-    if (!forecast_graph(p, 54, 452, 234, 384, F13, 1.0f, false))
-        d_text(F17, K_DIM, LV_OPA_COVER, 240, 304, 1, "Прогноз пока не получен");
+    d_rect(0, 0, 480, 480, 0, K_BG, LV_OPA_COVER);
+    // Полный экран использует композицию плитки без второй системы отступов
+    // и кеглей: график, шкалы и нижняя строка совпадают при размере 480×480.
+    tile_weather(p, 0, 0, 480, 480, true);
     d_head(p, false, true);
 }
 
@@ -2969,7 +2933,8 @@ static void tile_clock(const pad_t *p, int x, int y, int w, int h)
 }
 
 // Температура, описание, график и показатели имеют отдельные строки.
-static void tile_weather(const pad_t *p, int x, int y, int w, int h)
+// На полном экране место значка занимает кнопка «назад», описание начинается после неё.
+static void tile_weather(const pad_t *p, int x, int y, int w, int h, bool full)
 {
     clock_data_t d;
     clock_data(&d, p);
@@ -2984,9 +2949,10 @@ static void tile_weather(const pad_t *p, int x, int y, int w, int h)
     bool low = h < PS(200);
     int tpx = 0;
     const lv_font_t *tf = fit_font(true, 44, d.temp, w - PS(70), &tpx);
-    if (d.icon) d_icon(d.icon, x + PS(30), y + PS(30), PS(30), PL(2), K_INK, LV_OPA_COVER);
+    if (!full && d.icon) d_icon(d.icon, x + PS(30), y + PS(30), PS(30), PL(2), K_INK, LV_OPA_COVER);
     d_text(tf, K_INK, LV_OPA_COVER, x + w - PS(12), y + PS(38), 2, d.temp);
-    d_text_ellipsize(tile_font(false, 15), K_DIM, x + PS(12), y + PS(low ? 52 : 60), 0, w - PS(24), p->w_desc);
+    d_text_ellipsize(tile_font(false, 15), K_DIM, x + PS(full ? 74 : 12),
+                     y + PS(low ? 52 : 60), 0, w - PS(full ? 86 : 24), p->w_desc);
     bool graph = forecast_graph(p, x + PS(1), x + w - PS(2), y + PS(low ? 64 : 72),
                                 y + h - PS(28), tile_font(false, 10), s_tile_scale, true);
     if (!graph)
@@ -3071,7 +3037,7 @@ bool pad_tile(const pad_t *p, int x, int y, int w, int h, uint32_t page_bg, floa
     }
     if (p->kind == PAD_WEATHER) {
         if (p->clock_face) tile_clock(p, x, y, w, h);
-        else tile_weather(p, x, y, w, h);
+        else tile_weather(p, x, y, w, h, false);
         return true;
     }
     if (p->kind == PAD_TODAY) {

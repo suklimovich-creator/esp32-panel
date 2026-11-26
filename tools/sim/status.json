@@ -1,0 +1,23 @@
+{
+  "version": 1,
+  "cols": 3,
+  "status": [
+    {"kind":"status","channel":"/devices/motion/controls/Max Motion","icon":"motion","above":60,"fade":2},
+    {"kind":"status","channel":"/devices/ac/controls/mode","icon":"ac-unit","when":["cool","heat","dry","fan_only","auto"],"require":[{"channel":"/devices/ac/controls/power","when":"1"}],"value_channel":"/devices/ac/controls/target","value_digits":1,"value_unit":"°","badges":{"cool":"snow","heat":"heat","dry":"water","fan_only":"fan","auto":"auto"}},
+    {"kind":"air","channel":"/devices/msw/controls/CO2","icon":"co2","thresholds":[1000,1500],"chip_from":1,"alarm_from":2,"value_unit":""},
+    {"kind":"air","channel":"/devices/msw/controls/VOC","icon":"voc","thresholds":[220,660,2200],"chip_from":2,"alarm_from":3,"value_unit":""},
+    {"kind":"leak","icon":"leak","sensors":[{"topic":"/devices/mw/controls/Input F1"},{"topic":"/devices/mw/controls/Input F3"}],"alarms":["/devices/mw/controls/Leakage Mode"]},
+    {"kind":"status","channel":"/devices/fill/controls/One","icon":"home"},
+    {"kind":"status","channel":"/devices/fill/controls/Two","icon":"home"},
+    {"kind":"status","channel":"/devices/fill/controls/Three","icon":"home"}
+  ],
+  "pages": [
+    {"title":"Очень длинная гостиная","status":[{"kind":"status","channel":"/devices/door/controls/Contact","icon":"door-open","alarm":true}],"tiles":[{"type":"sensor","title":"Температура","value":"/devices/room/controls/Temperature","unit":"°","w":1,"h":1}]},
+    {"title":"Спальня и кабинет","status":[{"kind":"status","channel":"/devices/flag/controls/Main","icon":"home"}],"tiles":[{"type":"sensor","title":"Влажность","value":"/devices/room/controls/Humidity","unit":"%","w":1,"h":1}]},
+    {"title":"Кухня с длинным названием","tiles":[{"type":"sensor","title":"Давление","value":"/devices/room/controls/Pressure","unit":"","w":1,"h":1}]}
+  ],
+  "screensaver": {"after":30,"every":30,"cols":3,"pages":[
+    {"title":"Заставка","status":[{"kind":"status","channel":"/devices/saver/controls/Heat","icon":"heat"}],"tiles":[{"type":"sensor","title":"Температура","value":"/devices/room/controls/Temperature","unit":"°","w":1,"h":1}]},
+    {"title":"Ночь","status":[{"kind":"status","channel":"/devices/saver/controls/Night","icon":"home"}],"tiles":[{"type":"sensor","title":"Температура","value":"/devices/room/controls/Temperature","unit":"°","w":1,"h":1}]}
+  ]}
+}

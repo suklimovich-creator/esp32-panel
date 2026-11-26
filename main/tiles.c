@@ -678,6 +678,7 @@ static void tile_redraw(tile_t *t) { if (t->card) lv_obj_invalidate(t->card); }
 // Часы не зависят от MQTT: перерисовываем их только при смене минуты.
 void tiles_clock_tick(void)
 {
+    status_tick();
     time_t now = time(NULL);
     struct tm tmv;
     localtime_r(&now, &tmv);
@@ -1059,6 +1060,8 @@ static void show_page(int idx)
         lv_obj_set_style_bg_opa(s_tabs[i], on ? LV_OPA_COVER : LV_OPA_TRANSP, 0);
         th_bind(lv_obj_get_child(s_tabs[i], 0), LV_STYLE_TEXT_COLOR, 0, on ? TH_TEXT : TH_TEXT_DIM);
     }
+    status_page_changed(idx);
+    // Скроллим уже после того, как чипы изменили доступную ширину вкладок.
     lv_obj_scroll_to_view(s_tabs[idx], LV_ANIM_ON);
     camera_page_visible(idx);
 }
@@ -1138,6 +1141,7 @@ static void saver_show(int idx)
         if (i == idx) lv_obj_remove_flag(s_pages2[i], LV_OBJ_FLAG_HIDDEN);
         else lv_obj_add_flag(s_pages2[i], LV_OBJ_FLAG_HIDDEN);
     }
+    status_saver_page_changed(idx);
     // У камер заставки отдельные индексы страниц: 100, 101, ...
     camera_page_visible(100 + idx);
 }
@@ -1271,6 +1275,10 @@ void tiles_build(void *content_obj, void *tabbar_obj, const char *json)
         }
     }
 
+    // Верхние условные чипы: правила разобраны до удаления JSON, MQTT придёт
+    // позже и будет менять только содержимое контейнера, не раскладку плиток.
+    status_build(root, tabbar);
+
     // Заставка (с 0.11): свои страницы на отдельном экране, без вкладок.
     // Плитки заставки только показывают состояние: касание - выход.
     const cJSON *sv = cJSON_GetObjectItem(root, "screensaver");
@@ -1321,6 +1329,7 @@ void tiles_build(void *content_obj, void *tabbar_obj, const char *json)
                 lv_obj_remove_flag(t->card, LV_OBJ_FLAG_CLICKABLE);
             }
         }
+        status_build_saver(s_saver_scr);
         lv_timer_create(saver_cb, 500, NULL);
         ESP_LOGI(TAG, "заставка: страниц %d, плиток %d, через %d с",
                  s_npages2, s_count2, s_saver_after);
@@ -1352,6 +1361,7 @@ void tiles_for_each_topic(void (*cb)(const char *topic, void *ctx), void *ctx)
 {
     set_topics(s_tiles, s_count, cb, ctx);
     set_topics(s_tiles2, s_count2, cb, ctx);
+    status_for_each_topic(cb, ctx);
 }
 
 typedef struct { const char *topic; bool hit; } use_t;
@@ -1455,6 +1465,7 @@ void tiles_on_value(const char *topic, const char *value)
     uint32_t now = lv_tick_get();
     for (int i = 0; i < s_count; i++) tile_on_value(&s_tiles[i], topic, value, now);
     for (int i = 0; i < s_count2; i++) tile_on_value(&s_tiles2[i], topic, value, now);
+    status_on_value(topic, value);
     ui_unlock();
 }
 

@@ -5,6 +5,7 @@
 #   tools/sim/sim --screen раскладка.json значения.txt out.ppm [вкладка] [history.json] [1 - полный экран]
 #   tools/sim/sim --screen tools/sim/swipe.json tools/sim/swipe.txt out.ppm 0 - - - - swipe-check
 #   tools/sim/sim --screen tools/sim/clock.json tools/sim/clock.txt out.ppm 0 - - - - clock-check
+#   tools/sim/sim --screen tools/sim/status.json tools/sim/status.txt out.ppm 0 - 0 - - status-check
 # ac.json - плитка из /api/screen/<имя>, ac.txt - значения «топик=значение».
 set -e
 LV=${1:?путь к lvgl}; CJ=${2:?путь к cJSON}

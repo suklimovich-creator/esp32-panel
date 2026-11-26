@@ -28,6 +28,7 @@ static time_t sim_time(time_t *out)
 #define time sim_time
 #include "../../main/pads.c"
 #include "../../main/charts.c"
+#include "../../main/status.c"
 bool ui_lock(int ms) { return true; }
 void ui_unlock(void) {}
 lv_obj_t *ui_label(lv_obj_t *parent, const lv_font_t *font, uint32_t color, const char *text)
@@ -164,6 +165,26 @@ static bool sim_theme(bool live, lv_display_t *d)
     return true;
 }
 
+static status_render_t *sim_status_find(status_view_t *v, st_kind_t kind, const char *icon)
+{
+    for (int i = 0; i < v->n; i++)
+        if (v->items[i]->kind == kind && (!icon || !strcmp(v->render[i].icon, icon))) return &v->render[i];
+    return NULL;
+}
+
+static void sim_status_calm(void)
+{
+    tiles_on_value("/devices/msw/controls/CO2", "500");
+    tiles_on_value("/devices/msw/controls/VOC", "500");
+    tiles_on_value("/devices/mw/controls/Input F1", "0");
+    tiles_on_value("/devices/mw/controls/Input F3", "0");
+    tiles_on_value("/devices/mw/controls/Leakage Mode", "0");
+    tiles_on_value("/devices/door/controls/Contact", "0");
+    tiles_on_value("/devices/fill/controls/One", "0");
+    tiles_on_value("/devices/fill/controls/Two", "0");
+    tiles_on_value("/devices/fill/controls/Three", "0");
+}
+
 int main(int argc, char **argv)
 {
     if (argc > 1 && !strcmp(argv[1], "--weather-scale-check")) {
@@ -212,6 +233,8 @@ int main(int argc, char **argv)
         lv_obj_set_style_pad_all(tabbar, 4, 0);
         lv_obj_set_style_pad_column(tabbar, 4, 0);
         lv_obj_set_flex_flow(tabbar, LV_FLEX_FLOW_ROW);
+        lv_obj_set_scroll_dir(tabbar, LV_DIR_HOR);
+        lv_obj_set_scrollbar_mode(tabbar, LV_SCROLLBAR_MODE_OFF);
         lv_obj_t *content = lv_obj_create(scr);
         lv_obj_set_size(content, 480, 424);
         lv_obj_set_pos(content, 0, 56);
@@ -220,6 +243,12 @@ int main(int argc, char **argv)
         lv_obj_set_style_radius(content, 0, 0);
         lv_obj_set_style_pad_all(content, 0, 0);
         tiles_build(content, tabbar, readf(argv[2]));
+        if (argc > 10 && !strncmp(argv[10], "status", 6)) {
+            // В общем симуляторе служебной шапки нет; для проверки геометрии
+            // чипов добавляем часы ровно с координатами ui.c.
+            lv_obj_t *clock = th_label(scr, f22, TH_TEXT, "12:34");
+            lv_obj_align(clock, LV_ALIGN_TOP_RIGHT, -78, 15);
+        }
         lv_screen_load(scr);
         camera_main_visible(true);
         char line[256];
@@ -266,6 +295,74 @@ int main(int argc, char **argv)
             tiles_clock_tick();
             tiles_clock_tick();
             printf("clock-check: 7 размеров × 3 режима, MQTT, заставка и tick — OK\n");
+        }
+        // [10] status-check - условия, приоритеты, fade, страницы и заставка.
+        if (argc > 10 && !strcmp(argv[10], "status-check")) {
+            if (status_count() != 12 || s_main_view.n != 3 ||
+                !sim_status_find(&s_main_view, ST_AIR, "co2") ||
+                !sim_status_find(&s_main_view, ST_LEAK, "leak") ||
+                !sim_status_find(&s_main_view, ST_NORMAL, "door-open")) {
+                fprintf(stderr, "status-check: тревожные не сохранены при переполнении (%d)\n", s_main_view.n);
+                return 30;
+            }
+            for (int i = 0; i < s_main_view.n; i++) if (!s_main_view.render[i].alarm) return 31;
+            if (lv_obj_get_width(tabbar) < 96 || lv_obj_get_x(s_main_view.obj) < 8 + lv_obj_get_width(tabbar) + 7 ||
+                lv_obj_get_x(s_main_view.obj) + lv_obj_get_width(s_main_view.obj) > 338) {
+                fprintf(stderr, "status-check: наложение на вкладки/часы\n");
+                return 32;
+            }
+            sim_status_calm();
+            if (s_main_view.n != 2 || !sim_status_find(&s_main_view, ST_NORMAL, "motion") ||
+                !sim_status_find(&s_main_view, ST_NORMAL, "ac-unit")) return 33;
+            status_render_t *ac = sim_status_find(&s_main_view, ST_NORMAL, "ac-unit");
+            if (strcmp(ac->value, "23.5°") || !ac->badge || strcmp(ac->badge, "snow")) return 34;
+            tiles_on_value("/devices/ac/controls/power", "0");
+            if (s_main_view.n != 1 || sim_status_find(&s_main_view, ST_NORMAL, "ac-unit")) return 35;
+            tiles_on_value("/devices/ac/controls/power", "1");
+            tiles_on_value("/devices/motion/controls/Max Motion", "0");
+            status_render_t *motion = sim_status_find(&s_main_view, ST_NORMAL, "person");
+            if (!motion || !motion->faded) return 36;
+            // В симуляторе lv_tick_get() привязан к монотонным часам ОС, поэтому
+            // сдвигаем отметку последнего события вместо ожидания двух секунд.
+            for (int i = 0; i < s_main_view.n; i++)
+                if (!strcmp(s_main_view.render[i].icon, "person")) s_main_view.items[i]->seen -= 2500;
+            status_tick();
+            if (sim_status_find(&s_main_view, ST_NORMAL, "person") || s_main_view.n != 1) return 37;
+            show_page(1);
+            if (!sim_status_find(&s_main_view, ST_NORMAL, "home") ||
+                sim_status_find(&s_main_view, ST_NORMAL, "door-open")) return 38;
+            status_saver_page_changed(0);
+            if (!sim_status_find(&s_saver_view, ST_NORMAL, "heat")) return 39;
+            status_saver_page_changed(1);
+            tiles_on_value("/devices/saver/controls/Night", "1");
+            if (!sim_status_find(&s_saver_view, ST_NORMAL, "home")) return 40;
+            tiles_on_value("/devices/mw/controls/Leakage Mode", "1");
+            status_render_t *leak = sim_status_find(&s_main_view, ST_LEAK, "leak");
+            if (!leak || !leak->alarm || leak->value[0]) return 41;
+            tiles_on_value("/devices/mw/controls/Leakage Mode", "0");
+            show_page(2);
+            tiles_on_value("/devices/msw/controls/CO2", "1000");
+            status_render_t *co2 = sim_status_find(&s_main_view, ST_AIR, "co2");
+            if (!co2 || co2->alarm || !co2->active) return 42;
+            tiles_on_value("/devices/msw/controls/CO2", "1500");
+            co2 = sim_status_find(&s_main_view, ST_AIR, "co2");
+            if (!co2 || !co2->alarm) return 43;
+            tiles_on_value("/devices/msw/controls/VOC", "2200");
+            status_render_t *voc = sim_status_find(&s_main_view, ST_AIR, "voc");
+            if (!voc || !voc->alarm) return 44;
+            tiles_on_value("/devices/msw/controls/CO2", "500");
+            tiles_on_value("/devices/msw/controls/VOC", "500");
+            tiles_on_value("/devices/mw/controls/Leakage Mode", "0");
+            show_page(0);
+            status_saver_page_changed(0);
+            printf("status-check: MQTT, require/badges, fade, air/leak, страницы и переполнение — OK\n");
+        }
+        if (argc > 10 && !strcmp(argv[10], "status-calm")) sim_status_calm();
+        if (argc > 10 && !strcmp(argv[10], "status-saver") && s_saver_scr) {
+            sim_status_calm();
+            lv_screen_load(s_saver_scr);
+            saver_clock_tick();
+            saver_show(0);
         }
         // [10] saver - показать заставку; saver-check - войти и выйти с проверкой.
         if (argc > 10 && !strncmp(argv[10], "saver", 5) && s_saver_scr) {

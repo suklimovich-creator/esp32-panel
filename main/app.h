@@ -129,6 +129,7 @@ void mq_publish(const char *topic, const char *payload);
 // ---------------------------------------------------------------- tiles
 void tiles_build(void *content, void *tabbar, const char *json);   // под ui_lock
 int tiles_count(void);
+int status_count(void);       // условные чипы: MQTT нужен и без плиток
 void tiles_for_each_topic(void (*cb)(const char *topic, void *ctx), void *ctx);
 void tiles_on_value(const char *topic, const char *value);   // из задачи MQTT
 void tiles_history_updated(void);                              // новые точки графиков

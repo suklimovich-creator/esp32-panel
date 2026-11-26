@@ -75,8 +75,8 @@ static void on_got_ip(void *arg, esp_event_base_t base, int32_t id, void *data)
 
 void mq_start(void)
 {
-    if (!g_cfg.mqtt[0] || tiles_count() == 0) {
-        ESP_LOGI(TAG, "брокер не задан или плиток нет - MQTT не нужен");
+    if (!g_cfg.mqtt[0] || (tiles_count() == 0 && status_count() == 0)) {
+        ESP_LOGI(TAG, "брокер не задан или плиток и статусов нет - MQTT не нужен");
         return;
     }
     esp_mqtt_client_config_t cfg = {

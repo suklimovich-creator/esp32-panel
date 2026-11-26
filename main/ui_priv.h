@@ -34,6 +34,15 @@ void camera_reset(void);
 // Пульты (pads.c): описание - поле "pad" у плитки info.
 typedef struct pad pad_t;
 struct cJSON;
+// Условные чипы верхней строки (status.c): общие + активная страница.
+void status_build(const struct cJSON *root, lv_obj_t *tabbar);
+void status_build_saver(lv_obj_t *screen);
+void status_page_changed(int page);
+void status_saver_page_changed(int page);
+void status_for_each_topic(void (*cb)(const char *topic, void *ctx), void *ctx);
+void status_on_value(const char *topic, const char *value);  // уже под ui_lock
+void status_tick(void);
+
 pad_t *pad_parse(const struct cJSON *tile, const char *title);
 // Пульты без поля "pad" в контракте (с 0.11): погода и «Сегодня» - данные
 // в полях самой плитки.
